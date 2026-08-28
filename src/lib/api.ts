@@ -240,6 +240,23 @@ export const getActiveBooking = async (
   return (data as AppointmentRecord | null) ?? null;
 };
 
+/** Historial de turnos del cliente (no cancelados), del más reciente al más viejo. */
+export const getRecentBookings = async (
+  clientId: string,
+  limit = 6,
+): Promise<AppointmentRecord[]> => {
+  const sb = getSupabase();
+  const { data } = await sb
+    .from('appointments')
+    .select('*, clients(full_name, phone, last_visit)')
+    .eq('client_id', clientId)
+    .neq('status', 'cancelled')
+    .order('date', { ascending: false })
+    .order('time', { ascending: false })
+    .limit(limit);
+  return (data ?? []) as AppointmentRecord[];
+};
+
 export const listActiveBookingsBetween = async (
   from: string,
   to: string,

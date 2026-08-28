@@ -9,6 +9,7 @@ import {
   getActiveBooking,
   getOrCreateClient,
   getOpenDays,
+  getRecentBookings,
   IdentifiedClient,
   listAppointments,
   sendBookingWebhook,
@@ -61,6 +62,7 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
   const [email, setEmail] = useState('');
   const [identified, setIdentified] = useState<IdentifiedClient | null>(null);
   const [activeBooking, setActiveBooking] = useState<AppointmentRecord | null>(null);
+  const [recentBookings, setRecentBookings] = useState<AppointmentRecord[]>([]);
   const [isEditing, setIsEditing] = useState(false);
   const [openDays, setOpenDays] = useState<Record<string, boolean>>({});
   const [selectedDate, setSelectedDate] = useState(initialDate || '');
@@ -136,8 +138,12 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
 
   const handleIdentify = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || phone.replace(/\D/g, '').length < 8) {
-      setError('Ingresá tu nombre y un WhatsApp válido.');
+    if (!name.trim()) {
+      setError('Escribí tu nombre para identificarte.');
+      return;
+    }
+    if (phone.replace(/\D/g, '').length < 8) {
+      setError('Revisá tu WhatsApp: deben ser al menos 8 números, ej. 525512345678.');
       return;
     }
     setError('');
@@ -146,8 +152,12 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
       const result = await getOrCreateClient(name, phone, email);
       setIdentified(result);
       setName(result.client.full_name);
-      const active = await getActiveBooking(result.client.id);
+      const [active, recent] = await Promise.all([
+        getActiveBooking(result.client.id),
+        getRecentBookings(result.client.id),
+      ]);
       setActiveBooking(active);
+      setRecentBookings(recent);
       if (active) {
         setReferenceUrl(active.reference_url || '');
         setNote(active.note || '');
@@ -289,6 +299,7 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
     setInfo('');
     setEmail('');
     setPushStatus(null);
+    setRecentBookings([]);
   };
 
   return (
@@ -335,7 +346,10 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                   <input
                     type="text"
                     value={name}
-                    onChange={(e) => setName(e.target.value)}
+                    onChange={(e) => {
+                      setName(e.target.value);
+                      if (error) setError('');
+                    }}
                     placeholder="Tu nombre"
                     aria-label="Tu nombre"
                     className="w-full pl-9 pr-3 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500"
@@ -346,7 +360,10 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                   <input
                     type="tel"
                     value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
+                    onChange={(e) => {
+                      setPhone(e.target.value);
+                      if (error) setError('');
+                    }}
                     placeholder="Tu WhatsApp (ej: 525512345678)"
                     aria-label="Tu WhatsApp"
                     className="w-full pl-9 pr-3 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500"
@@ -463,6 +480,42 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                 <span className="font-bold">al menos 2 horas de anticipación</span> para que el
                 barbero pueda reponerlo.
               </div>
+
+              {recentBookings.length > 0 && (
+                <div className="mt-3 bg-gray-50/80 border border-gray-200 rounded-xl px-4 py-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                    📋 Tus turnos
+                  </p>
+                  <ul className="mt-2 space-y-1.5">
+                    {recentBookings.map((b) => (
+                      <li
+                        key={b.id}
+                        className="flex items-center justify-between text-xs text-gray-600"
+                      >
+                        <span className="truncate capitalize">
+                          {formatDateDisplay(b.date)} ·{' '}
+                          <span className="font-mono font-bold text-gray-800">{b.time}</span>
+                        </span>
+                        <span
+                          className={`shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            b.date >= today
+                              ? 'bg-emerald-100 text-emerald-700'
+                              : b.status === 'attended'
+                                ? 'bg-blue-100 text-blue-700'
+                                : 'bg-gray-100 text-gray-500'
+                          }`}
+                        >
+                          {b.date >= today
+                            ? 'Próximo'
+                            : b.status === 'attended'
+                              ? 'Atendido'
+                              : 'Pasado'}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </section>
           )}
 
@@ -482,6 +535,41 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                 <CalendarDays className="w-4 h-4 text-gray-400" />
                 Días habilitados
               </h2>
+              {recentBookings.length > 0 && (
+                <div className="mt-3 bg-gray-50/80 border border-gray-200 rounded-xl px-4 py-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                    📋 Tus turnos
+                  </p>
+                  <ul className="mt-2 space-y-1.5">
+                    {recentBookings.slice(0, 5).map((b) => (
+                      <li
+                        key={b.id}
+                        className="flex items-center justify-between text-xs text-gray-600"
+                      >
+                        <span className="truncate capitalize">
+                          {formatDateDisplay(b.date)} ·{' '}
+                          <span className="font-mono font-bold text-gray-800">{b.time}</span>
+                        </span>
+                        <span
+                          className={`shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            b.date >= today
+                              ? 'bg-emerald-100 text-emerald-700'
+                              : b.status === 'attended'
+                                ? 'bg-blue-100 text-blue-700'
+                                : 'bg-gray-100 text-gray-500'
+                          }`}
+                        >
+                          {b.date >= today
+                            ? 'Próximo'
+                            : b.status === 'attended'
+                              ? 'Atendido'
+                              : 'Pasado'}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {openDayList.length === 0 ? (
                 <p className="text-xs text-gray-400 italic text-center py-6">
                   Todavía no hay días habilitados para reservar. ¡Volvé pronto! 💈

@@ -9,7 +9,7 @@
 //   3. Marca reminded_at para no repetir.
 // ─────────────────────────────────────────────────────────────
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { webpush } from 'npm:web-push-libs/web-push@3.6.7';
+import webpush from 'npm:web-push@3.6.7';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || '';
 const SERVICE_ROLE_KEY = Deno.env.get('SERVICE_ROLE_KEY') || '';
