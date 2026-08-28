@@ -27,6 +27,7 @@ export interface ClientRecord {
   id: string;
   full_name: string;
   phone: string; // solo dígitos
+  email: string | null;
   last_visit: string | null; // YYYY-MM-DD
   created_at: string;
 }

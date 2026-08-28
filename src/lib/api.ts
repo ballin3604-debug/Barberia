@@ -43,6 +43,13 @@ export const sanitizeReferenceUrl = (url: string): string | null => {
   return null;
 };
 
+/** Valida un correo simple (opcional) y lo normaliza. */
+export const sanitizeEmail = (value: string): string | null => {
+  const email = value.trim().slice(0, 120);
+  if (!email) return null;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email) ? email.toLowerCase() : null;
+};
+
 /* ─────────────────────────────────────────────
  * Slots (horarios del día)
  * ───────────────────────────────────────────── */
@@ -133,9 +140,11 @@ export interface IdentifiedClient {
 export const getOrCreateClient = async (
   fullName: string,
   phone: string,
+  email?: string,
 ): Promise<IdentifiedClient> => {
   const sb = getSupabase();
   const cleanPhone = normalizePhone(phone) || null;
+  const cleanEmail = sanitizeEmail(email || '') || null;
   const name = fullName.trim().replace(/\s+/g, ' ');
 
   let existing: ClientRecord | null = null;
@@ -146,9 +155,13 @@ export const getOrCreateClient = async (
 
   if (existing) {
     const client = existing;
-    if (client.full_name !== name) {
-      await sb.from('clients').update({ full_name: name }).eq('id', client.id);
+    if (client.full_name !== name || (cleanEmail && client.email !== cleanEmail)) {
+      await sb
+        .from('clients')
+        .update({ full_name: name, ...(cleanEmail ? { email: cleanEmail } : {}) })
+        .eq('id', client.id);
       client.full_name = name;
+      if (cleanEmail) client.email = cleanEmail;
     }
     const days = client.last_visit ? daysSince(client.last_visit) : null;
     return { client, isNew: false, daysSinceLastCut: days };
@@ -156,7 +169,7 @@ export const getOrCreateClient = async (
 
   const { data: created, error } = await sb
     .from('clients')
-    .insert({ full_name: name, phone: cleanPhone })
+    .insert({ full_name: name, phone: cleanPhone, email: cleanEmail || null })
     .select('*')
     .single();
   if (error) throw error;

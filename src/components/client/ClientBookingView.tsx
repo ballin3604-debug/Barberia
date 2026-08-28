@@ -18,6 +18,7 @@ import {
   updateBooking,
   uploadReferenceImage,
 } from '../../lib/api';
+import { subscribeClientToPush, PushResult } from '../../lib/push';
 import { getTodayDateString, getUpcomingDays, formatDateDisplay } from '../../data/defaultData';
 import {
   ArrowLeft,
@@ -26,6 +27,7 @@ import {
   Clock,
   ImagePlus,
   Link2,
+  Mail,
   MessageCircle,
   Phone,
   Scissors,
@@ -56,13 +58,15 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
   const [step, setStep] = useState<Step>('identify');
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
   const [identified, setIdentified] = useState<IdentifiedClient | null>(null);
   const [activeBooking, setActiveBooking] = useState<AppointmentRecord | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [openDays, setOpenDays] = useState<Record<string, boolean>>({});
   const [selectedDate, setSelectedDate] = useState(initialDate || '');
   const [slots, setSlots] = useState<{ time: string; is_available: boolean }[]>([]);
-  const [appointments, setAppointments] = useState<{ time: string }[]>([]);
+  const [appointments, setAppointments] = useState<{ time: string; name: string }[]>([]);
+  const [pushStatus, setPushStatus] = useState<PushResult | null>(null);
   const [selectedTime, setSelectedTime] = useState<string | null>(null);
   const [referenceUrl, setReferenceUrl] = useState('');
   const [note, setNote] = useState('');
@@ -103,7 +107,9 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
         if (cancelled) return;
         setSlots(slotRows.map((s) => ({ time: s.time, is_available: s.is_available })));
         setAppointments(
-          apptRows.filter((a) => a.status !== 'cancelled').map((a) => ({ time: a.time })),
+          apptRows
+            .filter((a) => a.status !== 'cancelled')
+            .map((a) => ({ time: a.time, name: a.clients?.full_name || '' })),
         );
       })
       .catch((e) => setError(e.message))
@@ -137,7 +143,7 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
     setError('');
     setLoading(true);
     try {
-      const result = await getOrCreateClient(name, phone);
+      const result = await getOrCreateClient(name, phone, email);
       setIdentified(result);
       setName(result.client.full_name);
       const active = await getActiveBooking(result.client.id);
@@ -230,6 +236,10 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
       setActiveBooking(booking);
       setStep('done');
 
+      // Pide permiso para recordar la cita con una notificación del navegador (2 h antes)
+      setPushStatus(null);
+      subscribeClientToPush(identified.client.id).then(setPushStatus);
+
       const payload = {
         event: (isEditing ? 'booking.updated' : 'booking.created') as
           | 'booking.created'
@@ -277,6 +287,8 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
     setImagePreview(null);
     setDoneBooking(null);
     setInfo('');
+    setEmail('');
+    setPushStatus(null);
   };
 
   return (
@@ -337,6 +349,17 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                     onChange={(e) => setPhone(e.target.value)}
                     placeholder="Tu WhatsApp (ej: 525512345678)"
                     aria-label="Tu WhatsApp"
+                    className="w-full pl-9 pr-3 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div className="relative">
+                  <Mail className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="Tu correo (opcional, para recordatorios)"
+                    aria-label="Tu correo"
                     className="w-full pl-9 pr-3 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
@@ -484,6 +507,33 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                       </button>
                     ))}
                   </div>
+
+                  {appointments.length > 0 && (
+                    <div className="mt-4 bg-gray-50/80 border border-gray-200 rounded-xl px-4 py-3 anim-up">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                        💈 Ya reservaron su turno para este día
+                      </p>
+                      <ul className="mt-2 space-y-1.5">
+                        {appointments.map((a) => (
+                          <li
+                            key={`${a.time}-${a.name}`}
+                            className="flex items-center justify-between text-xs text-gray-600"
+                          >
+                            <span className="flex items-center gap-2 min-w-0">
+                              <span className="font-mono font-bold text-gray-800 shrink-0">
+                                {a.time}
+                              </span>
+                              <span className="truncate">{a.name}</span>
+                            </span>
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
+                          </li>
+                        ))}
+                      </ul>
+                      <p className="mt-2 text-[10px] text-gray-400 italic">
+                        Los turnos se van llenando — asegurá el tuyo.
+                      </p>
+                    </div>
+                  )}
 
                   <h3 className="text-sm font-bold flex items-center gap-2 mt-5">
                     <Clock className="w-4 h-4 text-gray-400" />
@@ -668,6 +718,17 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                 <span className="font-bold">al menos 2 horas de anticipación</span> para que el
                 barbero pueda reponerlo.
               </div>
+              {pushStatus === 'granted' && (
+                <p className="text-[11px] font-semibold text-emerald-700 mt-2.5">
+                  🔔 Recordatorio activado: te avisamos 2 h antes de tu turno.
+                </p>
+              )}
+              {pushStatus === 'denied' && (
+                <p className="text-[11px] text-gray-400 mt-2.5">
+                  Los recordatorios del navegador están desactivados. Podés recibirlos por correo
+                  si dejaste tu email.
+                </p>
+              )}
               <div className="flex flex-col gap-2 mt-5">
                 {barberPhone && (
                   <button

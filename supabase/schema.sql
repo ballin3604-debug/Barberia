@@ -9,6 +9,7 @@ create table if not exists public.clients (
   id uuid primary key default gen_random_uuid(),
   full_name text not null,
   phone text unique,                   -- solo dígitos, ej: 525512345678 (opcional)
+  email text,                          -- correo (opcional, para recordatorios)
   last_visit date,                     -- último corte (para el saludo de bienvenida)
   created_at timestamptz not null default now()
 );
@@ -37,6 +38,7 @@ create table if not exists public.appointments (
   reference_url text,                  -- link de TikTok / Instagram / foto
   reference_image_url text,            -- foto subida a Storage
   note text,
+  reminded_at timestamptz,             -- recordatorio por correo enviado
   created_at timestamptz not null default now()
 );
 
@@ -87,6 +89,18 @@ create table if not exists public.business_settings (
 insert into public.business_settings (id) values (1)
   on conflict (id) do nothing;
 
+-- ── 5b. TOKENS DE NOTIFICACIÓN WEB PUSH ────────────────────────
+create table if not exists public.push_tokens (
+  id bigint generated always as identity primary key,
+  client_id uuid references public.clients (id) on delete cascade,
+  endpoint text not null unique,
+  p256dh text not null,
+  auth text not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists push_tokens_client_idx on public.push_tokens (client_id);
+
 -- ── 6. SEGURIDAD (RLS): acceso público para la app  ───────────
 --  ⚠️ Los datos no son confidenciales (nombres y horarios).
 --  Se recomienda agregar un PIN de barbero en el futuro.
@@ -95,6 +109,11 @@ alter table public.slots enable row level security;
 alter table public.appointments enable row level security;
 alter table public.day_config enable row level security;
 alter table public.business_settings enable row level security;
+alter table public.push_tokens enable row level security;
+
+drop policy if exists "public access push_tokens" on public.push_tokens;
+create policy "public access push_tokens" on public.push_tokens
+  for all using (true) with check (true);
 
 drop policy if exists "public access clients" on public.clients;
 create policy "public access clients" on public.clients

@@ -84,6 +84,54 @@ El link público queda en `https://tu-proyecto.web.app`. Para abrir la vista de 
 **Plan B (sin Pabbly)**: si el webhook queda apagado, la app abre WhatsApp con el mensaje
 listo hacia tu número cada vez que alguien reserva — funciona sin configurar nada.
 
+## 🔔 Recordatorios automáticos (email + notificación del navegador)
+
+La función [supabase/functions/reminders/index.ts](supabase/functions/reminders/index.ts) se
+ejecuta cada 15 minutos y, para cada cita del día dentro de la ventana de 2 horas, envía:
+
+- 📧 **Correo** al cliente (si dejó su email) vía [Brevo](https://www.brevo.com) (300 correos/día gratis).
+- 🔔 **Notificación del navegador** (Web Push VAPID) si el cliente la aceptó al reservar.
+
+Nunca repite: marca `reminded_at` tras el primer envío.
+
+### Configurarlo (una sola vez)
+
+1. **Cuenta de Brevo**: creá una en brevo.com → agregá tu email como *remitente* y verificá el
+   correo de confirmación que te mandan → copiá tu **API key** (Settings → SMTP & API).
+2. **Claves VAPID** (para push): ejecutá una vez
+   ```bash
+   npx web-push generate-vapid-keys
+   ```
+   Guardá la clave **pública** para el paso 4 y la **privada** para el paso 5.
+3. **Deploy de la función** (con Supabase CLI):
+   ```bash
+   npm i -g supabase
+   supabase login
+   supabase functions deploy reminders --no-verify-jwt
+   supabase secrets set \
+     SERVICE_ROLE_KEY="TU_SERVICE_ROLE_KEY" \
+     BREVO_API_KEY="TU_BREVO_API_KEY" \
+     BREVO_FROM_EMAIL="tu@correo.com" \
+     BREVO_FROM_NAME="Tu Barbería" \
+     APP_URL="https://agenda-barberia-2190a.web.app" \
+     VAPID_PUBLIC_KEY="CLAVE_PUBLICA" \
+     VAPID_PRIVATE_KEY="CLAVE_PRIVADA" \
+     VAPID_SUBJECT="mailto:tu@correo.com"
+   ```
+   (La SERVICE_ROLE_KEY está en Supabase → Project Settings → API — nunca la pongas en la app.)
+4. **Clave pública en la app**: agregá a `.env.local`
+   ```
+   VITE_VAPID_PUBLIC_KEY="CLAVE_PUBLICA"
+   ```
+   y volvé a hacer `npm run deploy`.
+5. **Programá el cron**: en el SQL Editor ejecutá
+   [supabase/reminders-setup.sql](supabase/reminders-setup.sql) reemplazando
+   `{{PROJECT_URL}}` y `{{SERVICE_ROLE_KEY}}`.
+
+> 💡 El cliente ve "🔔 Recordatorio activado" al reservar si acepta el permiso. En iPhone (Safari/
+> Chrome), las notificaciones solo funcionan con la app instalada desde la pantalla de inicio.
+> El correo funciona en todos los dispositivos.
+
 ## 🛠️ Scripts
 
 | Comando           | Descripción                                    |
