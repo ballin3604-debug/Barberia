@@ -84,7 +84,7 @@ export const Modal: React.FC<ModalProps> = ({
         role="dialog"
         aria-modal="true"
         aria-labelledby={title ? titleId : undefined}
-        className={`relative bg-white rounded-xl shadow-xl border border-gray-200 w-full ${maxWidth} overflow-hidden flex flex-col max-h-[90vh]`}
+        className={`relative bg-white rounded-xl shadow-xl border border-gray-200 w-full ${maxWidth} overflow-hidden flex flex-col max-h-[90vh] anim-pop`}
       >
         {title && (
           <div

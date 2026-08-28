@@ -17,6 +17,7 @@ export interface BusinessSettings {
   phone: string; // WhatsApp del barbero con código de país, ej: +525512345678
   webhookUrl: string; // URL del workflow de Pabbly Connect (opcional)
   webhookEnabled: boolean;
+  pin: string; // PIN opcional para proteger la vista del barbero (solo local)
   services: ServiceItem[];
 }
 

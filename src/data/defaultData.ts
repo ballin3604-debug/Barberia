@@ -21,6 +21,7 @@ export const DEFAULT_SETTINGS: BusinessSettings = {
   phone: '',
   webhookUrl: '',
   webhookEnabled: false,
+  pin: '',
   services: BARBER_SERVICES,
 };
 
@@ -37,6 +38,7 @@ export const loadSettings = (): BusinessSettings => {
         phone: parsed.phone || localStorage.getItem(LEGACY_PHONE_KEY) || '',
         webhookUrl: parsed.webhookUrl || '',
         webhookEnabled: parsed.webhookEnabled ?? false,
+        pin: parsed.pin ?? '',
         services:
           Array.isArray(parsed.services) && parsed.services.length > 0
             ? parsed.services

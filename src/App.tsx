@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import { BusinessSettings } from './types';
 import { loadSettings, saveSettings } from './data/defaultData';
 import { fetchPublicBusinessData, migrateLocalAgenda, savePublicBusinessData } from './lib/api';
@@ -8,7 +8,7 @@ import { BarberAgendaView } from './components/barber/BarberAgendaView';
 import { SettingsModal } from './components/SettingsModal';
 import { ReportsModal } from './components/ReportsModal';
 import { useToast } from './components/Toast';
-import { Database, Upload } from 'lucide-react';
+import { Database, Scissors, Upload } from 'lucide-react';
 
 const MIGRATED_KEY = 'barber_migrated_v1';
 const LEGACY_SCHEDULE_KEY = 'barber_agenda_clean_v2';
@@ -23,6 +23,7 @@ export default function App() {
   const [settings, setSettings] = useState<BusinessSettings>(loadSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [reportsOpen, setReportsOpen] = useState(false);
+  const [pinOk, setPinOk] = useState(() => sessionStorage.getItem('barber_pin_ok') === '1');
 
   const [showMigrate, setShowMigrate] = useState<boolean>(() => {
     if (!isSupabaseConfigured() || localStorage.getItem(MIGRATED_KEY)) return false;
@@ -142,6 +143,19 @@ export default function App() {
     );
   }
 
+  // ── PROTECCIÓN CON PIN (solo vista del barbero) ──
+  if (settings.pin && !pinOk) {
+    return (
+      <PinGate
+        pin={settings.pin}
+        onOk={() => {
+          sessionStorage.setItem('barber_pin_ok', '1');
+          setPinOk(true);
+        }}
+      />
+    );
+  }
+
   // ── VISTA DEL BARBERO ──
   return (
     <>
@@ -226,3 +240,53 @@ export default function App() {
     </>
   );
 }
+
+/* ── Pantalla de PIN (protección opcional de la vista del barbero) ── */
+const PinGate: React.FC<{ pin: string; onOk: () => void }> = ({ pin, onOk }) => {
+  const [value, setValue] = useState('');
+  const [error, setError] = useState('');
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    if (value === pin) {
+      onOk();
+    } else {
+      setError('PIN incorrecto. Intentá de nuevo.');
+      setValue('');
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center p-4 font-sans">
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-8 w-full max-w-xs text-center anim-pop">
+        <div className="w-12 h-12 rounded-xl bg-gray-900 text-white flex items-center justify-center mx-auto">
+          <Scissors className="w-5 h-5" />
+        </div>
+        <h1 className="text-base font-bold text-gray-900 mt-4">Agenda protegida</h1>
+        <p className="text-xs text-gray-500 mt-1 mb-5">Ingresá el PIN para ver la agenda.</p>
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <input
+            type="password"
+            inputMode="numeric"
+            autoFocus
+            value={value}
+            onChange={(e) => {
+              setValue(e.target.value.replace(/\D/g, '').slice(0, 6));
+              setError('');
+            }}
+            aria-label="PIN"
+            className="w-full text-center py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-mono tracking-widest"
+          />
+          {error && <p className="text-xs font-bold text-red-600">{error}</p>}
+          <button
+            type="submit"
+            disabled={value.length === 0}
+            className="w-full py-2.5 bg-gray-900 hover:bg-black disabled:opacity-40 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+          >
+            Entrar
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+};

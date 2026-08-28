@@ -23,6 +23,27 @@ export const daysSince = (dateStr: string): number => {
 };
 
 /* ─────────────────────────────────────────────
+ * Validación y saneamiento (seguridad)
+ * ───────────────────────────────────────────── */
+export const sanitizeText = (value: string, maxLength: number): string =>
+  value.trim().replace(/\s+/g, ' ').slice(0, maxLength);
+
+export const sanitizeNote = (value: string): string => value.trim().slice(0, 500);
+
+/** Solo permite enlaces http/https (bloquea javascript:, datos, etc.) */
+export const sanitizeReferenceUrl = (url: string): string | null => {
+  const trimmed = url.trim().slice(0, 500);
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') return trimmed;
+  } catch {
+    // URL inválida
+  }
+  return null;
+};
+
+/* ─────────────────────────────────────────────
  * Slots (horarios del día)
  * ───────────────────────────────────────────── */
 export const ensureDaySlots = async (date: string): Promise<SlotRecord[]> => {
@@ -189,6 +210,52 @@ export const listAppointments = async (date: string): Promise<AppointmentRecord[
   return (data ?? []) as AppointmentRecord[];
 };
 
+/** Reserva activa del cliente (hoy o futura, no cancelada). Máx. 1 por celular. */
+export const getActiveBooking = async (
+  clientId: string,
+): Promise<AppointmentRecord | null> => {
+  const sb = getSupabase();
+  const { data } = await sb
+    .from('appointments')
+    .select('*, clients(full_name, phone, last_visit)')
+    .eq('client_id', clientId)
+    .neq('status', 'cancelled')
+    .gte('date', getTodayDateString())
+    .order('date', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  return (data as AppointmentRecord | null) ?? null;
+};
+
+export const listActiveBookingsBetween = async (
+  from: string,
+  to: string,
+): Promise<{ date: string; time: string }[]> => {
+  const sb = getSupabase();
+  const { data } = await sb
+    .from('appointments')
+    .select('date,time')
+    .gte('date', from)
+    .lte('date', to)
+    .neq('status', 'cancelled');
+  return (data ?? []) as { date: string; time: string }[];
+};
+
+/** Cita no cancelada anterior a hoy (turno viejo sin atender). */
+const getStaleBooking = async (clientId: string): Promise<AppointmentRecord | null> => {
+  const sb = getSupabase();
+  const { data } = await sb
+    .from('appointments')
+    .select('*')
+    .eq('client_id', clientId)
+    .neq('status', 'cancelled')
+    .lt('date', getTodayDateString())
+    .order('date', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  return (data as AppointmentRecord | null) ?? null;
+};
+
 export interface BookingInput {
   clientId: string;
   date: string;
@@ -200,6 +267,15 @@ export interface BookingInput {
 
 export const createBooking = async (input: BookingInput): Promise<AppointmentRecord> => {
   const sb = getSupabase();
+  const referenceUrl = sanitizeReferenceUrl(input.referenceUrl || '');
+  const note = sanitizeNote(input.note || '');
+
+  // Regla: una sola reserva activa por cliente (evita saturación)
+  const active = await getActiveBooking(input.clientId);
+  if (active) {
+    throw new Error('Ya tenés un turno activo. Podés editarlo o cancelarlo desde la app.');
+  }
+
   const { data, error } = await sb
     .from('appointments')
     .insert({
@@ -207,19 +283,69 @@ export const createBooking = async (input: BookingInput): Promise<AppointmentRec
       date: input.date,
       time: input.time,
       status: 'confirmed',
-      reference_url: input.referenceUrl || null,
+      reference_url: referenceUrl,
       reference_image_url: input.referenceImageUrl || null,
-      note: input.note || null,
+      note: note || null,
     })
     .select('*, clients(full_name, phone, last_visit)')
     .single();
-  if (error) throw error;
+  if (error) {
+    if (error.code === '23505') {
+      // Puede ser: horario tomado, o un turno viejo sin atender que bloquea al cliente.
+      // En este último caso lo cancelamos automáticamente y reintentamos una vez.
+      const stale = await getStaleBooking(input.clientId);
+      if (stale) {
+        await sb.from('appointments').update({ status: 'cancelled' }).eq('id', stale.id);
+        return createBooking(input);
+      }
+      throw new Error('Ese horario acaba de ser tomado o ya tenés un turno agendado.');
+    }
+    throw error;
+  }
 
   // Actualiza el último corte solo si la cita es hoy o anterior
   if (daysSince(input.date) >= 0) {
     await sb.from('clients').update({ last_visit: input.date }).eq('id', input.clientId);
   }
 
+  return data as AppointmentRecord;
+};
+
+/** Edita una reserva existente (cambiar horario, referencia o notas). */
+export const updateBooking = async (
+  id: string,
+  input: Pick<BookingInput, 'date' | 'time' | 'referenceUrl' | 'referenceImageUrl' | 'note'>,
+): Promise<AppointmentRecord> => {
+  const sb = getSupabase();
+  const referenceUrl = sanitizeReferenceUrl(input.referenceUrl || '');
+
+  // El horario destino no debe estar ocupado por otra cita activa
+  const { data: taken } = await sb
+    .from('appointments')
+    .select('id')
+    .eq('date', input.date)
+    .eq('time', input.time)
+    .neq('status', 'cancelled')
+    .neq('id', id)
+    .maybeSingle();
+  if (taken) {
+    throw new Error('Ese horario acaba de ser tomado por otra persona. Elegí otro.');
+  }
+
+  const { data, error } = await sb
+    .from('appointments')
+    .update({
+      date: input.date,
+      time: input.time,
+      status: 'confirmed',
+      reference_url: referenceUrl,
+      reference_image_url: input.referenceImageUrl || null,
+      note: sanitizeNote(input.note || '') || null,
+    })
+    .eq('id', id)
+    .select('*, clients(full_name, phone, last_visit)')
+    .single();
+  if (error) throw error;
   return data as AppointmentRecord;
 };
 
@@ -310,7 +436,7 @@ export const subscribeAgendaChanges = (onChange: () => void): (() => void) => {
  * Webhook → Pabbly Connect (WhatsApp)
  * ───────────────────────────────────────────── */
 export interface BookingWebhookPayload {
-  event: 'booking.created';
+  event: 'booking.created' | 'booking.updated';
   clientName: string;
   clientPhone: string;
   date: string;
@@ -429,3 +555,32 @@ export const migrateLocalAgenda = async (
 
   return { clients, appointments, days };
 };
+
+/* ─────────────────────────────────────────────
+ * Mensajes de WhatsApp (reglas y avisos)
+ * ───────────────────────────────────────────── */
+export const buildRulesText = (businessName: string): string => `💈 *${businessName} — Reservas online* 📲
+
+¡Hola! Te contamos cómo funciona la reserva de turnos:
+
+1️⃣ *Elegí el día y el horario* que te quede cómodo.
+2️⃣ *Mandá una foto o el video* (TikTok) del corte que te gustaría hacerte para preparar todo.
+3️⃣ *Confirmá* y te queda tu turno reservado.
+
+📌 *Reglas importantes:*
+• Una persona puede tener *un solo turno activo* a la vez.
+• Si querés cambiar el horario, podés *editar* tu turno desde el mismo link (*no hace falta avisar*).
+• Si no podés asistir, *editá o cancelá tu turno con al menos 2 horas de anticipación* para que el barbero pueda reponerlo y nadie se quede sin su turno.
+• Llegá 5 minutos antes. 🙏
+
+¡Te esperamos! ✂️`;
+
+export const buildConfirmationText = (
+  businessName: string,
+  date: string,
+  time: string,
+): string => `💈 *${businessName}*
+✅ *Turno confirmado*
+📅 ${date} · ⏰ ${time} h
+
+¿No podés asistir? Editá o cancelá tu turno con *al menos 2 horas de anticipación* para que el barbero pueda reponerlo. ¡Te esperamos! ✂️`;

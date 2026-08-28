@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { BusinessSettings } from '../types';
 import { getTodayDateString } from '../data/defaultData';
+import { buildRulesText } from '../lib/api';
 import { Modal } from './Modal';
-import { Download, MessageCircle, Save, Store, Upload, Zap } from 'lucide-react';
+import { useToast } from './Toast';
+import { Copy, Download, Lock, MessageCircle, Save, Store, Upload, Zap } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -23,10 +25,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onExport,
   onImport,
 }) => {
+  const showToast = useToast();
   const [businessName, setBusinessName] = useState('');
   const [phone, setPhone] = useState('');
   const [webhookUrl, setWebhookUrl] = useState('');
   const [webhookEnabled, setWebhookEnabled] = useState(false);
+  const [pin, setPin] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -35,6 +39,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setPhone(settings.phone);
       setWebhookUrl(settings.webhookUrl);
       setWebhookEnabled(settings.webhookEnabled);
+      setPin(settings.pin || '');
       setError('');
     }
   }, [isOpen, settings]);
@@ -50,8 +55,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       phone: phone.trim(),
       webhookUrl: webhookUrl.trim(),
       webhookEnabled,
+      pin: pin.trim(),
     });
     onClose();
+  };
+
+  const handleCopyRules = async () => {
+    try {
+      await navigator.clipboard.writeText(buildRulesText(businessName.trim() || 'la barbería'));
+      showToast('Mensaje copiado — pegálo en tu grupo de WhatsApp');
+    } catch {
+      showToast('No se pudo copiar el mensaje', 'error');
+    }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -159,6 +174,52 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <p className="text-[10px] text-gray-400 mt-1">
               Se envía un POST con la cita (cliente, fecha, hora y referencia) al workflow de
               Pabbly. Si queda apagado, se abre WhatsApp con el mensaje listo.
+            </p>
+          </div>
+        </section>
+
+        {/* ── Mensaje de reglas para WhatsApp ── */}
+        <section className="space-y-3 pt-4 border-t border-gray-100">
+          <h3 className="text-xs font-bold uppercase tracking-widest text-gray-500 flex items-center gap-1.5">
+            <MessageCircle className="w-3.5 h-3.5" /> Mensaje de reglas para WhatsApp
+          </h3>
+          <p className="text-[11px] text-gray-500">
+            Copiá este mensaje y mandalo a tu grupo de WhatsApp para que los clientes sepan cómo
+            reservar y las reglas (editar/cancelar 2 h antes).
+          </p>
+          <div className="bg-gray-50 border border-gray-200 rounded-xl p-3.5 font-mono text-[11px] text-gray-600 whitespace-pre-wrap max-h-44 overflow-y-auto">
+            {buildRulesText(businessName.trim() || 'la barbería')}
+          </div>
+          <button
+            type="button"
+            onClick={handleCopyRules}
+            className="flex items-center gap-1.5 px-3.5 py-2 bg-green-600 hover:bg-green-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+          >
+            <Copy className="w-3.5 h-3.5" />
+            Copiar mensaje
+          </button>
+        </section>
+
+        {/* ── Protección ── */}
+        <section className="space-y-3 pt-4 border-t border-gray-100">
+          <h3 className="text-xs font-bold uppercase tracking-widest text-gray-500 flex items-center gap-1.5">
+            <Lock className="w-3.5 h-3.5" /> Protección de la vista del barbero (opcional)
+          </h3>
+          <div>
+            <label className="block text-xs font-bold uppercase tracking-wider text-gray-700 mb-1.5">
+              PIN de 4 a 6 dígitos
+            </label>
+            <input
+              type="password"
+              inputMode="numeric"
+              value={pin}
+              onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              placeholder="Sin PIN = acceso libre"
+              className="w-full px-3 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-mono"
+            />
+            <p className="text-[10px] text-gray-400 mt-1">
+              Si lo configurás, se pedirá al abrir la agenda en este navegador. El link de
+              clientes NO pide PIN.
             </p>
           </div>
         </section>

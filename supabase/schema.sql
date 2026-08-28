@@ -48,6 +48,26 @@ create unique index if not exists one_active_booking_per_slot
   on public.appointments (date, time)
   where status <> 'cancelled';
 
+-- ═══════════════════════════════════════════════════════════════
+--  REGLA: UNA SOLA RESERVA ACTIVA POR CLIENTE
+--  Evita que una misma persona sature el sistema con varios turnos.
+--  (Los índices de Postgres solo admiten predicados IMMUTABLE, por
+--   eso la parte "hoy o futuro" se controla desde la app.)
+-- ═══════════════════════════════════════════════════════════════
+do $$
+begin
+  delete from public.appointments a
+  using public.appointments b
+  where a.client_id = b.client_id
+    and a.status <> 'cancelled' and b.status <> 'cancelled'
+    and a.id <> b.id
+    and a.created_at < b.created_at;
+end $$;
+
+create unique index if not exists one_active_booking_per_client
+  on public.appointments (client_id)
+  where status <> 'cancelled';
+
 -- ── 4. DÍAS LABORABLES ─────────────────────────────────────────
 create table if not exists public.day_config (
   date date primary key,

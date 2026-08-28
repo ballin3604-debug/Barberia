@@ -17,9 +17,11 @@ import {
 import { SlotActionsModal } from './SlotActionsModal';
 import { HoursEditorModal } from './HoursEditorModal';
 import { ClientsPanelModal } from './ClientsPanelModal';
+import { CalendarModal } from './CalendarModal';
 import { useToast } from '../Toast';
 import {
   BarChart3,
+  CalendarDays,
   ChevronLeft,
   ChevronRight,
   Link2,
@@ -65,6 +67,7 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
   const [actionSlot, setActionSlot] = useState<{ time: string; available: boolean } | null>(null);
   const [showHoursEditor, setShowHoursEditor] = useState(false);
   const [showClients, setShowClients] = useState(false);
+  const [showCalendar, setShowCalendar] = useState(false);
 
   const upcomingDays = useMemo(() => getUpcomingDays(7), []);
 
@@ -76,7 +79,7 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
         ensureDaySlots(selectedDate),
         listAppointments(selectedDate),
       ]);
-      setIsOpen(dayConfig ? dayConfig.is_open : true);
+      setIsOpen(dayConfig ? dayConfig.is_open : false);
       setSlots(slotRows);
       setAppointments(apptRows);
       setError('');
@@ -200,6 +203,15 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
             <div className="hidden md:flex items-center gap-1">
               <button
                 type="button"
+                onClick={() => setShowCalendar(true)}
+                className="p-2 text-gray-500 hover:text-gray-900 rounded-lg hover:bg-gray-100 cursor-pointer"
+                title="Calendario de días (abrir/cerrar fechas)"
+                aria-label="Calendario de días"
+              >
+                <CalendarDays className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
                 onClick={() => setShowClients(true)}
                 className="p-2 text-gray-500 hover:text-gray-900 rounded-lg hover:bg-gray-100 cursor-pointer"
                 title="Clientes"
@@ -281,6 +293,13 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
             </button>
             <button
               type="button"
+              onClick={() => setShowCalendar(true)}
+              className="md:hidden text-[11px] font-bold text-gray-600 hover:text-gray-900 px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
+            >
+              📅 Días
+            </button>
+            <button
+              type="button"
               onClick={() => setShowClients(true)}
               className="md:hidden text-[11px] font-bold text-gray-600 hover:text-gray-900 px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
             >
@@ -316,20 +335,28 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
         )}
 
         {!isOpen ? (
-          <div className="flex flex-col items-center justify-center text-center py-16 space-y-3">
+          <div className="flex flex-col items-center justify-center text-center py-16 space-y-4 anim-up">
             <div className="w-14 h-14 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center border border-amber-200">
               <Scissors className="w-7 h-7" />
             </div>
             <h2 className="text-base font-bold text-gray-900">Día cerrado</h2>
             <p className="text-xs text-gray-500 max-w-xs">
-              No se muestran horarios ni se pueden hacer reservas. Tocá «Atendiendo» para abrir el
-              día.
+              Los clientes no pueden reservar este día. Abrilo cuando quieras recibir turnos.
             </p>
+            <button
+              type="button"
+              onClick={handleToggleDay}
+              className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+            >
+              Abrir este día
+            </button>
           </div>
         ) : loading ? (
-          <p className="text-xs text-gray-400 italic text-center py-16">Cargando agenda…</p>
+          <p className="text-xs text-gray-400 italic text-center py-16 anim-fade">
+            Cargando agenda…
+          </p>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5 anim-up">
             {PERIODS.map((period) => (
               <div key={period.key} className="flex flex-col gap-2.5">
                 <div className="flex items-center justify-between pb-1.5 border-b border-gray-200/80">
@@ -376,6 +403,11 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
         onChanged={reload}
       />
       <ClientsPanelModal isOpen={showClients} onClose={() => setShowClients(false)} />
+      <CalendarModal
+        isOpen={showCalendar}
+        onClose={() => setShowCalendar(false)}
+        onChanged={reload}
+      />
     </div>
   );
 };
