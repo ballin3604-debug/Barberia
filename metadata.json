@@ -1,6 +1,6 @@
 {
   "name": "Agenda de Barbería",
-  "description": "Sistema de gestión de citas y horarios disponibles con registro de clientes y control de descansos.",
+  "description": "Sistema de gestión de citas y horarios disponibles con registro de clientes, control de descansos, enlace público de reserva por WhatsApp, respaldos y reportes.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }

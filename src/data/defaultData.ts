@@ -1,5 +1,8 @@
-import { ServiceItem, TimeSlot } from '../types';
+import { BusinessSettings, DayPeriod, ServiceItem, TimeSlot } from '../types';
 
+/* ─────────────────────────────────────────────
+ * Servicios por defecto
+ * ───────────────────────────────────────────── */
 export const BARBER_SERVICES: ServiceItem[] = [
   { id: 'corte-clasico', name: 'Corte Clásico', durationMinutes: 40, price: '$10.00' },
   { id: 'corte-barba', name: 'Corte + Barba', durationMinutes: 50, price: '$15.00' },
@@ -10,6 +13,65 @@ export const BARBER_SERVICES: ServiceItem[] = [
   { id: 'combo-vip', name: 'Combo VIP Completo', durationMinutes: 60, price: '$22.00' },
 ];
 
+/* ─────────────────────────────────────────────
+ * Configuración del negocio (localStorage)
+ * ───────────────────────────────────────────── */
+export const DEFAULT_SETTINGS: BusinessSettings = {
+  businessName: 'Barbería El Maestro',
+  phone: '',
+  webhookUrl: '',
+  webhookEnabled: false,
+  services: BARBER_SERVICES,
+};
+
+const SETTINGS_KEY = 'barber_settings_v1';
+const LEGACY_PHONE_KEY = 'barber_phone';
+
+export const loadSettings = (): BusinessSettings => {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<BusinessSettings>;
+      return {
+        businessName: parsed.businessName || DEFAULT_SETTINGS.businessName,
+        phone: parsed.phone || localStorage.getItem(LEGACY_PHONE_KEY) || '',
+        webhookUrl: parsed.webhookUrl || '',
+        webhookEnabled: parsed.webhookEnabled ?? false,
+        services:
+          Array.isArray(parsed.services) && parsed.services.length > 0
+            ? parsed.services
+            : DEFAULT_SETTINGS.services,
+      };
+    }
+  } catch {
+    // datos corruptos: usar por defecto
+  }
+  // Migración desde la versión anterior (barber_phone)
+  const legacyPhone = localStorage.getItem(LEGACY_PHONE_KEY) || '';
+  if (legacyPhone) {
+    return { ...DEFAULT_SETTINGS, phone: legacyPhone };
+  }
+  return DEFAULT_SETTINGS;
+};
+
+export const saveSettings = (settings: BusinessSettings): void => {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    // almacenamiento no disponible
+  }
+};
+
+export const generateId = (): string => {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+};
+
+/* ─────────────────────────────────────────────
+ * Fechas
+ * ───────────────────────────────────────────── */
 export const getTodayDateString = (): string => {
   const now = new Date();
   const year = now.getFullYear();
@@ -18,6 +80,72 @@ export const getTodayDateString = (): string => {
   return `${year}-${month}-${day}`;
 };
 
+export const formatDateDisplay = (dateStr: string): string => {
+  try {
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    const options: Intl.DateTimeFormatOptions = {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    };
+    const formatted = date.toLocaleDateString('es-ES', options);
+    return formatted.charAt(0).toUpperCase() + formatted.slice(1);
+  } catch {
+    return dateStr;
+  }
+};
+
+export const formatDateShort = (dateStr: string): string => {
+  try {
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    return date.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' });
+  } catch {
+    return dateStr;
+  }
+};
+
+export const addDaysToDateStr = (dateStr: string, offset: number): string => {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dateObj = new Date(y, m - 1, d + offset);
+  const ny = dateObj.getFullYear();
+  const nm = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const nd = String(dateObj.getDate()).padStart(2, '0');
+  return `${ny}-${nm}-${nd}`;
+};
+
+export const getUpcomingDays = (
+  daysCount = 7,
+): { dateStr: string; label: string; isToday: boolean; weekday: string }[] => {
+  const list = [];
+  const now = new Date();
+  for (let i = 0; i < daysCount; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const dateStr = `${y}-${m}-${day}`;
+
+    const weekday = d.toLocaleDateString('es-ES', { weekday: 'short' });
+    const formattedWeekday = weekday.charAt(0).toUpperCase() + weekday.slice(1).replace('.', '');
+    const dayNum = d.getDate();
+    const monthName = d.toLocaleDateString('es-ES', { month: 'short' }).replace('.', '');
+
+    list.push({
+      dateStr,
+      label: `${formattedWeekday} ${dayNum} ${monthName}`,
+      weekday: formattedWeekday,
+      isToday: i === 0,
+    });
+  }
+  return list;
+};
+
+/* ─────────────────────────────────────────────
+ * Horarios estándar y slots
+ * ───────────────────────────────────────────── */
 export const STANDARD_HOURS = [
   '09:00',
   '09:45',
@@ -74,49 +202,6 @@ export const generateBlankSlotsForDate = (dateStr: string): TimeSlot[] => {
       date: dateStr,
     };
   });
-};
-
-export const getUpcomingDays = (daysCount = 7): { dateStr: string; label: string; isToday: boolean; weekday: string }[] => {
-  const list = [];
-  const now = new Date();
-  for (let i = 0; i < daysCount; i++) {
-    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i);
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    const dateStr = `${y}-${m}-${day}`;
-    
-    const weekday = d.toLocaleDateString('es-ES', { weekday: 'short' });
-    const formattedWeekday = weekday.charAt(0).toUpperCase() + weekday.slice(1).replace('.', '');
-    const dayNum = d.getDate();
-    const monthName = d.toLocaleDateString('es-ES', { month: 'short' }).replace('.', '');
-
-    list.push({
-      dateStr,
-      label: `${formattedWeekday} ${dayNum} ${monthName}`,
-      weekday: formattedWeekday,
-      isToday: i === 0,
-    });
-  }
-  return list;
-};
-
-
-export const formatDateDisplay = (dateStr: string): string => {
-  try {
-    const [year, month, day] = dateStr.split('-').map(Number);
-    const date = new Date(year, month - 1, day);
-    const options: Intl.DateTimeFormatOptions = { 
-      weekday: 'long', 
-      year: 'numeric', 
-      month: 'long', 
-      day: 'numeric' 
-    };
-    const formatted = date.toLocaleDateString('es-ES', options);
-    return formatted.charAt(0).toUpperCase() + formatted.slice(1);
-  } catch {
-    return dateStr;
-  }
 };
 
 export const getDefaultSlotsForDate = (dateStr: string): TimeSlot[] => [
@@ -269,5 +354,43 @@ export const getDefaultSlotsForDate = (dateStr: string): TimeSlot[] => [
     period: 'afternoon',
     type: 'available',
     date: dateStr,
-  }
+  },
 ];
+
+/* ─────────────────────────────────────────────
+ * Particionado de horarios (mañana / tarde / noche)
+ * ───────────────────────────────────────────── */
+export const getPeriodForTime = (time: string): DayPeriod => {
+  const hour = parseInt(time.split(':')[0], 10);
+  if (hour < 12) return 'morning';
+  if (hour < 18) return 'afternoon';
+  return 'evening';
+};
+
+export const getPeriodForSlot = (slot: { time: string }): DayPeriod => getPeriodForTime(slot.time);
+
+export const splitSlotsByPeriod = <T extends { time: string }>(slots: T[]) => {
+  const morning: T[] = [];
+  const afternoon: T[] = [];
+  const evening: T[] = [];
+  for (const slot of slots) {
+    const period = getPeriodForTime(slot.time);
+    if (period === 'morning') morning.push(slot);
+    else if (period === 'afternoon') afternoon.push(slot);
+    else evening.push(slot);
+  }
+  return { morning, afternoon, evening };
+};
+
+/* ─────────────────────────────────────────────
+ * Precios
+ * ───────────────────────────────────────────── */
+export const parsePriceToNumber = (price: string): number => {
+  const match = price.replace(/[^0-9.,]/g, '').replace(',', '.');
+  const value = parseFloat(match);
+  return Number.isFinite(value) ? value : 0;
+};
+
+export const formatMoney = (value: number, currency = '$'): string => {
+  return `${currency}${value.toFixed(2)}`;
+};

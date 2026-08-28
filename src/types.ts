@@ -2,6 +2,8 @@ export type SlotType = 'available' | 'booked' | 'break' | 'blocked';
 
 export type AppointmentStatus = 'confirmed' | 'pending' | 'attended';
 
+export type DayPeriod = 'morning' | 'afternoon' | 'evening';
+
 export interface ServiceItem {
   id: string;
   name: string;
@@ -9,6 +11,54 @@ export interface ServiceItem {
   price: string;
   description?: string;
 }
+
+export interface BusinessSettings {
+  businessName: string;
+  phone: string; // WhatsApp del barbero con código de país, ej: +525512345678
+  webhookUrl: string; // URL del workflow de Pabbly Connect (opcional)
+  webhookEnabled: boolean;
+  services: ServiceItem[];
+}
+
+/* ── Modelos de Supabase ──────────────────────────────── */
+
+export interface ClientRecord {
+  id: string;
+  full_name: string;
+  phone: string; // solo dígitos
+  last_visit: string | null; // YYYY-MM-DD
+  created_at: string;
+}
+
+export type AppointmentState = 'confirmed' | 'attended' | 'cancelled';
+
+export interface AppointmentRecord {
+  id: string;
+  client_id: string;
+  date: string;
+  time: string;
+  status: AppointmentState;
+  reference_url: string | null;
+  reference_image_url: string | null;
+  note: string | null;
+  created_at: string;
+  // join con clients
+  clients?: Pick<ClientRecord, 'id' | 'full_name' | 'phone' | 'last_visit'> | null;
+}
+
+export interface SlotRecord {
+  id: number;
+  date: string;
+  time: string;
+  is_available: boolean;
+}
+
+export interface DayConfigRecord {
+  date: string;
+  is_open: boolean;
+}
+
+/* ── Modelos legacy (localStorage) ─────────────────────── */
 
 export interface TimeSlot {
   id: string;
@@ -26,17 +76,10 @@ export interface TimeSlot {
   createdAt?: string;
 }
 
-export interface DayConfig {
-  date: string;
-  isWorkingDay: boolean;
-  slots: TimeSlot[];
+export interface BackupFile {
+  version: 1;
+  exportedAt: string;
+  settings: BusinessSettings;
+  workingDaysMap: Record<string, boolean>;
+  scheduleMap: Record<string, TimeSlot[]>;
 }
-
-export interface DaySummary {
-  totalSlots: number;
-  bookedCount: number;
-  availableCount: number;
-  breakCount: number;
-  blockedCount: number;
-}
-

@@ -2,19 +2,124 @@
 <img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
 </div>
 
-# Run and deploy your AI Studio app
+# 💈 Agenda de Barbería
 
-This contains everything you need to run your app locally.
+Sistema de citas para barbería con reserva online de clientes, referencia de corte por foto/video,
+notificaciones por WhatsApp y agenda del barbero en tiempo real.
 
-View your app in AI Studio: https://ai.studio/apps/76880929-3b1a-42f2-9257-cf61015ee086
+## 🔄 El flujo
 
-## Run Locally
+1. **El barbero comparte el link** (botón «Compartir» en la vista del barbero): `?view=client&date=…`
+2. **El cliente entra**, escribe su nombre y WhatsApp → el sistema lo **identifica**:
+   - Cliente nuevo → _"¡Bienvenido! 😊"_
+   - Cliente fijo → _"¡Hola de nuevo! 👋 Tu último corte fue hace 12 días"_
+3. El cliente elige **día y horario** libre.
+4. Agrega la **referencia de su corte**: link de TikTok/Instagram **o foto** subida a Supabase Storage.
+5. La cita se guarda en **Supabase** y:
+   - Si configuraste **Pabbly** → se envía un aviso automático por WhatsApp (webhook).
+   - Si no → se abre WhatsApp con el mensaje listo hacia tu número.
+6. La **agenda del barbero se actualiza en tiempo real** (Supabase Realtime) con la foto/referencia.
 
-**Prerequisites:**  Node.js
+## 🚀 Puesta en marcha
 
+### 1. Instalá dependencias
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+```bash
+npm install
+```
+
+### 2. Conectá Supabase (base de datos)
+
+1. Creá un proyecto gratis en [supabase.com](https://supabase.com) (USA / cualquier región).
+2. Abrí **SQL Editor** → pegá TODO el contenido de [`supabase/schema.sql`](supabase/schema.sql) → **Run**.
+   Esto crea las tablas (`clients`, `slots`, `appointments`, `day_config`, `business_settings`),
+   las políticas de acceso, el Realtime y el bucket de Storage `references`.
+3. Andá a **Project Settings → API** y copiá la _Project URL_ y la _anon key_.
+4. Creá el archivo **`.env.local`** en la raíz del proyecto:
+
+   ```bash
+   VITE_SUPABASE_URL="https://tu-proyecto.supabase.co"
+   VITE_SUPABASE_ANON_KEY="tu_anon_key"
+   ```
+
+5. Reiniciá el servidor (`npm run dev` o `npm run build`).
+
+> 💾 La primera vez, la app te ofrece **migrar automáticamente** tu agenda de localStorage a Supabase.
+
+### 3. Configurá el negocio
+
+En la vista del barbero → **Ajustes**:
+
+- Nombre de la barbería y tu número de WhatsApp.
+- (Opcional) Webhook de Pabbly para notificaciones automáticas.
+
+### 4. Publicá en Firebase Hosting
+
+```bash
+npm i -g firebase-tools
+firebase login
+firebase use --add        # elegí o creá tu proyecto Firebase
+npm run deploy            # construye y sube (usa firebase.json)
+```
+
+El link público queda en `https://tu-proyecto.web.app`. Para abrir la vista de clientes:
+`https://tu-proyecto.web.app/?view=client`.
+
+## 📱 WhatsApp automático (Pabbly Connect)
+
+> ⚠️ **Importante**: la API oficial de Meta **no permite enviar mensajes a grupos** de WhatsApp
+> (solo 1 a 1). Por eso el aviso llega a **tu número** y lo reenvías al grupo con 2 taps — es lo
+> máximo permitido oficialmente.
+
+1. Creá una cuenta en [connect.pabbly.com](https://connect.pabbly.com) (plan gratis: ~100 tareas/mes).
+2. Creá un **workflow** → trigger **Webhook** → copiá la URL de captura.
+3. Agregá el paso **WhatsApp Cloud API** (de Meta) → conectá tu número de Business API.
+   - Configurá el mensaje mapeando los campos del JSON que envía la app:
+     `clientName`, `clientPhone`, `date`, `time`, `referenceUrl`, `referenceImageUrl`, `note`.
+   - Ejemplo de texto: `💈 *Nueva reserva*\n👤 {{clientName}}\n📅 {{date}} ⏰ {{time}}…`
+4. Probá el workflow (botón «Capture» en Pabbly) con una reserva de prueba.
+5. En la app → **Ajustes** → activá _Notificaciones automáticas_ y pegá la URL del webhook.
+6. Guardá. Cada cita nueva dispara el workflow.
+
+**Plan B (sin Pabbly)**: si el webhook queda apagado, la app abre WhatsApp con el mensaje
+listo hacia tu número cada vez que alguien reserva — funciona sin configurar nada.
+
+## 🛠️ Scripts
+
+| Comando           | Descripción                                    |
+| ----------------- | ---------------------------------------------- |
+| `npm run dev`     | Servidor de desarrollo (http://localhost:3000) |
+| `npm run build`   | Build de producción en `dist/`                 |
+| `npm run preview` | Sirve el build localmente                      |
+| `npm run deploy`  | Build + deploy a Firebase Hosting              |
+| `npm run lint`    | Type-check + ESLint                            |
+| `npm run format`  | Prettier                                       |
+| `npm run clean`   | Elimina `dist/`                                |
+
+## 🗂️ Estructura
+
+```
+src/
+├── App.tsx                      # Enrutador: vista cliente (pública) / vista barbero
+├── lib/
+│   ├── supabase.ts              # Cliente de Supabase (env vars)
+│   └── api.ts                   # Citas, clientes, slots, webhook, migración
+├── components/
+│   ├── client/ClientBookingView.tsx   # Reserva pública del cliente (identificación + referencia)
+│   ├── barber/BarberAgendaView.tsx    # Agenda unificada del barbero (tiempo real)
+│   ├── barber/SlotActionsModal.tsx    # Acciones por turno (agendar, atender, liberar)
+│   ├── barber/HoursEditorModal.tsx    # Editor de horarios del día
+│   ├── barber/ClientsPanelModal.tsx   # Clientes: historial y último corte
+│   ├── SettingsModal.tsx        # Negocio + Pabbly + respaldo
+│   ├── ReportsModal.tsx         # Reportes del período
+│   └── Modal.tsx / Toast.tsx / ErrorBoundary.tsx
+├── data/defaultData.ts          # Horarios estándar, fechas, settings locales
+└── types.ts                     # Tipos TS + modelos de Supabase
+```
+
+## 🛠️ Stack
+
+- React 19 + TypeScript (strict) + Vite + Tailwind CSS 4
+- **Supabase**: Postgres, Realtime y Storage
+- **Firebase Hosting** para producción
+- **Pabbly Connect + WhatsApp Cloud API** para notificaciones (opcional)
