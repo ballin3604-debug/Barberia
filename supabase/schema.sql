@@ -70,6 +70,95 @@ create unique index if not exists one_active_booking_per_client
   on public.appointments (client_id)
   where status <> 'cancelled';
 
+-- ═══════════════════════════════════════════════════════════════
+--  OPERACIONES ATÓMICAS (evita carreras entre dispositivos)
+--  Reservar y mover turnos en UNA transacción con bloqueo:
+--  si dos personas tocan el mismo horario, la primera gana y la
+--  segunda recibe un error claro (nunca se pisan los turnos).
+-- ═══════════════════════════════════════════════════════════════
+create or replace function public.create_appointment(
+  p_client_id uuid,
+  p_date date,
+  p_time text,
+  p_reference_url text default null,
+  p_reference_image_url text default null,
+  p_note text default null
+) returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_id uuid;
+begin
+  lock table public.appointments in share row exclusive mode;
+
+  if exists (
+    select 1 from public.appointments
+    where date = p_date and time = p_time and status <> 'cancelled'
+  ) then
+    raise exception 'SLOT_TAKEN' using errcode = '23505';
+  end if;
+
+  if exists (
+    select 1 from public.appointments
+    where client_id = p_client_id and status <> 'cancelled' and date >= current_date
+  ) then
+    raise exception 'CLIENT_HAS_BOOKING' using errcode = '23505';
+  end if;
+
+  insert into public.appointments
+    (client_id, date, time, status, reference_url, reference_image_url, note)
+  values
+    (p_client_id, p_date, p_time, 'confirmed', p_reference_url, p_reference_image_url, p_note)
+  returning id into v_id;
+
+  if p_date <= current_date then
+    update public.clients set last_visit = p_date where id = p_client_id;
+  end if;
+
+  return v_id;
+end $$;
+
+create or replace function public.move_appointment(
+  p_id uuid,
+  p_date date,
+  p_time text,
+  p_reference_url text default null,
+  p_reference_image_url text default null,
+  p_note text default null
+) returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  lock table public.appointments in share row exclusive mode;
+
+  if exists (
+    select 1 from public.appointments
+    where date = p_date and time = p_time and status <> 'cancelled' and id <> p_id
+  ) then
+    raise exception 'SLOT_TAKEN' using errcode = '23505';
+  end if;
+
+  update public.appointments
+  set
+    date = p_date,
+    time = p_time,
+    status = 'confirmed',
+    reference_url = coalesce(p_reference_url, reference_url),
+    reference_image_url = coalesce(p_reference_image_url, reference_image_url),
+    note = coalesce(p_note, note)
+  where id = p_id;
+
+  if not found then
+    raise exception 'APPOINTMENT_NOT_FOUND' using errcode = 'P0002';
+  end if;
+
+  return p_id;
+end $$;
+
 -- ── 4. DÍAS LABORABLES ─────────────────────────────────────────
 create table if not exists public.day_config (
   date date primary key,

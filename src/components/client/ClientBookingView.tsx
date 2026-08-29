@@ -4,18 +4,24 @@ import {
   buildConfirmationText,
   buildRulesText,
   buildWaLink,
+  clearClientSession,
   createBooking,
   ensureDaySlots,
   getActiveBooking,
-  getOrCreateClient,
   getOpenDays,
   getRecentBookings,
+  getOrCreateClient,
   IdentifiedClient,
   listAppointments,
+  loadClientSession,
+  normalizePhone,
+  sanitizeEmail,
+  saveClientSession,
   sendBookingWebhook,
   sanitizeNote,
   sanitizeReferenceUrl,
   setAppointmentState,
+  subscribeAgendaChanges,
   updateBooking,
   uploadReferenceImage,
 } from '../../lib/api';
@@ -44,7 +50,7 @@ interface ClientBookingViewProps {
   initialDate?: string;
 }
 
-type Step = 'identify' | 'manage' | 'book' | 'reference' | 'done';
+type Step = 'agenda' | 'identify' | 'confirmMove' | 'reference' | 'manage' | 'done';
 
 const ACCEPTED_IMAGES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/heic'];
 
@@ -56,11 +62,13 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
   initialDate,
 }) => {
   const today = getTodayDateString();
-  const [step, setStep] = useState<Step>('identify');
+  const [step, setStep] = useState<Step>('agenda');
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [identified, setIdentified] = useState<IdentifiedClient | null>(null);
+  const [identifyForOther, setIdentifyForOther] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [activeBooking, setActiveBooking] = useState<AppointmentRecord | null>(null);
   const [recentBookings, setRecentBookings] = useState<AppointmentRecord[]>([]);
   const [isEditing, setIsEditing] = useState(false);
@@ -68,8 +76,8 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
   const [selectedDate, setSelectedDate] = useState(initialDate || '');
   const [slots, setSlots] = useState<{ time: string; is_available: boolean }[]>([]);
   const [appointments, setAppointments] = useState<{ time: string; name: string }[]>([]);
-  const [pushStatus, setPushStatus] = useState<PushResult | null>(null);
-  const [selectedTime, setSelectedTime] = useState<string | null>(null);
+  const [pendingTime, setPendingTime] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [referenceUrl, setReferenceUrl] = useState('');
   const [note, setNote] = useState('');
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -78,6 +86,7 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [doneBooking, setDoneBooking] = useState<{ date: string; time: string } | null>(null);
+  const [pushStatus, setPushStatus] = useState<PushResult | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const upcomingDays = useMemo(() => getUpcomingDays(14), []);
@@ -90,16 +99,19 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
       .catch(() => setOpenDays({}));
   }, [today, upcomingDays]);
 
-  // Si el día seleccionado no está abierto, elegir el próximo día abierto
+  // Por defecto: primer día abierto (respeta la fecha del link solo si está abierta)
   useEffect(() => {
-    if (!identified) return;
     const open = upcomingDays.filter((d) => openDays[d.dateStr] === true);
     if (open.length === 0) return;
-    const currentOpen = open.some((d) => d.dateStr === selectedDate);
-    if (!currentOpen) setSelectedDate(open[0].dateStr);
-  }, [identified, openDays, upcomingDays, selectedDate]);
+    if (!selectedDate || !open.some((d) => d.dateStr === selectedDate)) {
+      const preferred = initialDate && open.some((d) => d.dateStr === initialDate)
+        ? initialDate
+        : open[0].dateStr;
+      setSelectedDate(preferred);
+    }
+  }, [openDays, upcomingDays, selectedDate, initialDate]);
 
-  // Cargar horarios y citas del día
+  // Cargar la agenda del día (sin necesidad de identificarse)
   useEffect(() => {
     if (!selectedDate) return;
     let cancelled = false;
@@ -119,13 +131,62 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [selectedDate]);
+  }, [selectedDate, refreshKey]);
 
   useEffect(() => {
     return () => {
       if (imagePreview) URL.revokeObjectURL(imagePreview);
     };
   }, [imagePreview]);
+
+  // Cambios en tiempo real (otras reservas, movimientos, cancelaciones)
+  useEffect(() => {
+    const unsubscribe = subscribeAgendaChanges(() => setRefreshKey((k) => k + 1));
+    return unsubscribe;
+  }, []);
+
+  // Si este dispositivo ya identificó a un cliente, restaurar su sesión
+  useEffect(() => {
+    const session = loadClientSession();
+    if (!session) return;
+    setRestoring(true);
+    (async () => {
+      try {
+        const result = await getOrCreateClient(
+          session.fullName,
+          session.phone,
+          session.email,
+        );
+        setIdentified(result);
+        const [active, recent] = await Promise.all([
+          getActiveBooking(result.client.id),
+          getRecentBookings(result.client.id),
+        ]);
+        setActiveBooking(active);
+        setRecentBookings(recent);
+        if (active) {
+          setReferenceUrl(active.reference_url || '');
+          setNote(active.note || '');
+        }
+      } catch {
+        // Sin conexión: usar la sesión guardada tal cual
+        setIdentified({
+          client: {
+            id: session.clientId,
+            full_name: session.fullName,
+            phone: session.phone,
+            email: session.email || null,
+            last_visit: null,
+            created_at: session.savedAt,
+          },
+          isNew: false,
+          daysSinceLastCut: null,
+        });
+      } finally {
+        setRestoring(false);
+      }
+    })();
+  }, []);
 
   const openDayList = upcomingDays.filter((d) => openDays[d.dateStr] === true);
 
@@ -134,6 +195,69 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
     const now = new Date();
     const [h, m] = time.split(':').map(Number);
     return h * 60 + m <= now.getHours() * 60 + now.getMinutes();
+  };
+
+  /* ── Elegir un horario libre ── */
+  const pickTime = (time: string) => {
+    setPendingTime(time);
+    setError('');
+    if (!identified) {
+      setStep('identify');
+      return;
+    }
+    // Ya identificado y con turno activo en otro horario → preguntar
+    if (activeBooking && !(activeBooking.date === selectedDate && activeBooking.time === time)) {
+      setStep('confirmMove');
+      return;
+    }
+    if (activeBooking) {
+      // Es el mismo turno → gestionar
+      setStep('manage');
+      return;
+    }
+    setIsEditing(false);
+    setStep('reference');
+  };
+
+  /* ── Confirmar el traslado del turno (misma persona u otra) ── */
+  const confirmMoveForSelf = () => {
+    if (!activeBooking) return;
+    setIsEditing(true);
+    setReferenceUrl(activeBooking.reference_url || '');
+    setNote(activeBooking.note || '');
+    setStep('reference');
+  };
+
+  const confirmMoveForOther = () => {
+    // Reservar para OTRA PERSONA: datos nuevos y limpias la identidad actual
+    setIdentifyForOther(true);
+    setIdentified(null);
+    setActiveBooking(null);
+    setRecentBookings([]);
+    setIsEditing(false);
+    setName('');
+    setPhone('');
+    setEmail('');
+    setStep('identify');
+  };
+
+  const backToAgenda = () => {
+    setStep('agenda');
+    setPendingTime(null);
+    setIdentifyForOther(false);
+    setError('');
+  };
+
+  /* ── Cambiar de persona (comparten el teléfono: familiar, amigo) ── */
+  const changePerson = () => {
+    clearClientSession();
+    setIdentified(null);
+    setActiveBooking(null);
+    setRecentBookings([]);
+    setIsEditing(false);
+    setPendingTime(null);
+    setIdentifyForOther(true);
+    setStep('identify');
   };
 
   const handleIdentify = async (e: React.FormEvent) => {
@@ -151,43 +275,51 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
     try {
       const result = await getOrCreateClient(name, phone, email);
       setIdentified(result);
+      setIdentifyForOther(false);
       setName(result.client.full_name);
+      saveClientSession({
+        clientId: result.client.id,
+        fullName: result.client.full_name,
+        phone: normalizePhone(result.client.phone || phone),
+        email: sanitizeEmail(email) || result.client.email || '',
+        savedAt: new Date().toISOString(),
+      });
       const [active, recent] = await Promise.all([
         getActiveBooking(result.client.id),
         getRecentBookings(result.client.id),
       ]);
       setActiveBooking(active);
       setRecentBookings(recent);
-      if (active) {
+
+      if (active && active.date === selectedDate && active.time === pendingTime) {
+        // Ya tiene justo ese turno → gestionarlo
         setReferenceUrl(active.reference_url || '');
         setNote(active.note || '');
         setStep('manage');
+      } else if (active) {
+        // Tiene un turno activo → editar al nuevo horario
+        setIsEditing(true);
+        setReferenceUrl(active.reference_url || '');
+        setNote(active.note || '');
+        setStep('reference');
       } else {
+        setIsEditing(false);
         setReferenceUrl('');
         setNote('');
-        setStep('book');
+        setStep('reference');
       }
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'No pudimos guardar tus datos. Revisá la conexión e intentá de nuevo.',
-      );
+      const message = err instanceof Error ? err.message : '';
+      if (/column|relation|42P01|PGRST204|does not exist/i.test(message)) {
+        setError(
+          'La base de datos está desactualizada. Avisá al administrador: hay que ejecutar supabase/schema.sql de nuevo en el SQL Editor.',
+        );
+      } else {
+        setError(message || 'No pudimos guardar tus datos. Revisá tu conexión e intentá de nuevo.');
+      }
     } finally {
       setLoading(false);
     }
-  };
-
-  const startEdit = () => {
-    setIsEditing(true);
-    setStep('book');
-    setSelectedTime(null);
-  };
-
-  const backToManage = () => {
-    setIsEditing(false);
-    setStep('manage');
-    setSelectedTime(null);
   };
 
   const handleCancelBooking = async () => {
@@ -198,9 +330,9 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
       setInfo('Turno cancelado. Podés reservar otro cuando quieras.');
       setActiveBooking(null);
       setIsEditing(false);
-      setReferenceUrl('');
-      setNote('');
-      setStep('book');
+      setPendingTime(null);
+      setRefreshKey((k) => k + 1);
+      setStep('agenda');
     } catch {
       setError('No se pudo cancelar el turno. Probá de nuevo.');
     } finally {
@@ -209,7 +341,7 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
   };
 
   const handleConfirm = async () => {
-    if (!identified || !selectedTime) return;
+    if (!identified || !pendingTime) return;
     setError('');
     setLoading(true);
     try {
@@ -224,7 +356,7 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
       if (isEditing && activeBooking) {
         booking = await updateBooking(activeBooking.id, {
           date: selectedDate,
-          time: selectedTime,
+          time: pendingTime,
           referenceUrl: url,
           referenceImageUrl: referenceImageUrl || activeBooking.reference_image_url,
           note: cleanNote,
@@ -233,17 +365,18 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
         booking = await createBooking({
           clientId: identified.client.id,
           date: selectedDate,
-          time: selectedTime,
+          time: pendingTime,
           referenceUrl: url,
           referenceImageUrl,
           note: cleanNote,
         });
       }
 
-      setDoneBooking({ date: selectedDate, time: selectedTime });
+      setDoneBooking({ date: selectedDate, time: pendingTime });
       setInfo('');
       setIsEditing(false);
       setActiveBooking(booking);
+      setRefreshKey((k) => k + 1);
       setStep('done');
 
       // Pide permiso para recordar la cita con una notificación del navegador (2 h antes)
@@ -257,7 +390,7 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
         clientName: identified.client.full_name,
         clientPhone: identified.client.phone,
         date: selectedDate,
-        time: selectedTime,
+        time: pendingTime,
         referenceUrl: url,
         referenceImageUrl,
         note: cleanNote,
@@ -268,7 +401,7 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
         const waText = `${buildConfirmationText(
           businessName,
           formatDateDisplay(selectedDate),
-          selectedTime,
+          pendingTime,
         )}`;
         window.open(
           buildWaLink(
@@ -285,22 +418,18 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
     }
   };
 
-  const resetBooking = () => {
-    setStep('identify');
-    setIdentified(null);
-    setActiveBooking(null);
-    setIsEditing(false);
-    setSelectedTime(null);
-    setReferenceUrl('');
-    setNote('');
-    setImageFile(null);
-    setImagePreview(null);
+  /* ── Volver a la agenda tras confirmar (mantiene la sesión) ── */
+  const backToAgendaAfterDone = () => {
     setDoneBooking(null);
-    setInfo('');
-    setEmail('');
+    setPendingTime(null);
+    setIsEditing(false);
     setPushStatus(null);
-    setRecentBookings([]);
+    setInfo('');
+    setRefreshKey((k) => k + 1);
+    setStep('agenda');
   };
+
+  /* ─────────────── RENDER ─────────────── */
 
   return (
     <div className="min-h-screen bg-slate-50 text-gray-900 flex flex-col font-sans selection:bg-blue-100">
@@ -333,12 +462,297 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
             </p>
           )}
 
-          {/* ── PASO 1: IDENTIFICAR ── */}
+          {/* ═══════════ PRIMERA VISTA: LA AGENDA DEL DÍA ═══════════ */}
+          {step === 'agenda' && (
+            <section className="bg-white rounded-2xl shadow-sm border border-gray-200 p-5 anim-up">
+              <div className="flex items-center justify-between mb-1">
+                <h2 className="text-sm font-bold flex items-center gap-2">
+                  <CalendarDays className="w-4 h-4 text-gray-400" />
+                  Agenda del día
+                </h2>
+                {selectedDate && (
+                  <span className="text-[11px] font-bold text-gray-500 capitalize">
+                    {formatDateDisplay(selectedDate)}
+                  </span>
+                )}
+              </div>
+
+              {/* Sesión del cliente: no vuelve a pedir identificación */}
+              {identified && (
+                <div className="flex items-center justify-between mt-3 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 anim-fade">
+                  <span className="text-[11px] font-bold text-gray-600 flex items-center gap-1.5 min-w-0">
+                    <User className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                    <span className="truncate">{identified.client.full_name}</span>
+                    {restoring && (
+                      <span className="text-gray-400 font-medium shrink-0">· verificando…</span>
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={changePerson}
+                    className="shrink-0 text-[11px] font-bold text-blue-600 hover:text-blue-800 cursor-pointer"
+                  >
+                    ¿No sos vos? Cambiar
+                  </button>
+                </div>
+              )}
+
+              {/* Mis turnos (todas las fechas, para que nunca "desaparezcan") */}
+              {identified && recentBookings.length > 0 && (
+                <div className="mt-3 bg-gray-50/80 border border-gray-200 rounded-xl px-4 py-3 anim-fade">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                    📋 Mis turnos
+                  </p>
+                  <ul className="mt-2 space-y-1.5">
+                    {recentBookings.slice(0, 4).map((b) => (
+                      <li
+                        key={b.id}
+                        className="flex items-center justify-between text-xs text-gray-600"
+                      >
+                        <span className="truncate capitalize">
+                          {formatDateDisplay(b.date)} ·{' '}
+                          <span className="font-mono font-bold text-gray-800">{b.time}</span>
+                        </span>
+                        <span
+                          className={`shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            b.date >= today
+                              ? 'bg-emerald-100 text-emerald-700'
+                              : b.status === 'attended'
+                                ? 'bg-blue-100 text-blue-700'
+                                : 'bg-gray-100 text-gray-500'
+                          }`}
+                        >
+                          {b.date >= today
+                            ? 'Próximo'
+                            : b.status === 'attended'
+                              ? 'Atendido'
+                              : 'Pasado'}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Días habilitados */}
+              {openDayList.length === 0 ? (
+                <p className="text-xs text-gray-400 italic text-center py-6">
+                  Todavía no hay días habilitados para reservar. ¡Volvé pronto! 💈
+                </p>
+              ) : (
+                <>
+                  <div className="flex gap-2 overflow-x-auto pb-2 mt-3">
+                    {openDayList.map((d) => (
+                      <button
+                        key={d.dateStr}
+                        type="button"
+                        onClick={() => setSelectedDate(d.dateStr)}
+                        className={`shrink-0 px-3.5 py-2 rounded-xl text-center transition-all cursor-pointer border anim-pop ${
+                          selectedDate === d.dateStr
+                            ? 'bg-gray-900 text-white border-gray-900'
+                            : 'bg-white text-gray-700 border-gray-200 hover:border-gray-400'
+                        }`}
+                      >
+                        <span className="block text-[10px] font-bold uppercase tracking-wide opacity-70">
+                          {d.weekday}
+                        </span>
+                        <span className="block text-sm font-bold">{d.dateStr.slice(8)}</span>
+                        {recentBookings.some(
+                          (b) => b.date === d.dateStr && b.status !== 'cancelled',
+                        ) && (
+                          <span
+                            className="mt-0.5 inline-block w-1.5 h-1.5 rounded-full bg-emerald-500"
+                            title="Tenés un turno este día"
+                          />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* La lista de turnos: quién reservó y qué queda libre */}
+                  {loading ? (
+                    <p className="text-xs text-gray-400 italic py-8 text-center anim-fade">
+                      Cargando agenda…
+                    </p>
+                  ) : (
+                    <div className="flex flex-col gap-2 mt-3">
+                      {slots
+                        .filter((s) => s.is_available || appointments.some((a) => a.time === s.time))
+                        .filter((s) => !isPastTime(s.time))
+                        .map((s, index) => {
+                          const appt = appointments.find((a) => a.time === s.time);
+                          const isMine =
+                            identified &&
+                            activeBooking &&
+                            activeBooking.time === s.time &&
+                            activeBooking.date === selectedDate;
+                          if (appt) {
+                            const canEdit = isMine;
+                            return (
+                              <div
+                                key={s.time}
+                                onClick={canEdit ? () => setStep('manage') : undefined}
+                                style={{ animationDelay: `${index * 35}ms` }}
+                                role={canEdit ? 'button' : undefined}
+                                tabIndex={canEdit ? 0 : undefined}
+                                onKeyDown={
+                                  canEdit
+                                    ? (e) => {
+                                        if (e.key === 'Enter' || e.key === ' ') setStep('manage');
+                                      }
+                                    : undefined
+                                }
+                                className={`anim-up flex items-center justify-between py-2.5 px-3.5 rounded-xl border transition-all ${
+                                  isMine
+                                    ? 'bg-emerald-50/70 border-emerald-200'
+                                    : 'bg-gray-50/80 border-gray-200'
+                                } ${canEdit ? 'cursor-pointer hover:border-emerald-400' : ''}`}
+                              >
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <span className="font-mono text-sm font-bold text-gray-800 shrink-0">
+                                    {s.time}
+                                  </span>
+                                  <span
+                                    className={`text-xs font-semibold truncate ${
+                                      isMine ? 'text-emerald-800' : 'text-gray-600'
+                                    }`}
+                                  >
+                                    {isMine ? '★ Tu turno · tocá para editar' : appt.name}
+                                  </span>
+                                </div>
+                                <span
+                                  className={`shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                                    isMine
+                                      ? 'bg-emerald-100 text-emerald-700'
+                                      : 'bg-gray-200/80 text-gray-500'
+                                  }`}
+                                >
+                                  {isMine ? '✏️ Editar' : 'Ya reservó'}
+                                </span>
+                              </div>
+                            );
+                          }
+                          return (
+                            <button
+                              key={s.time}
+                              type="button"
+                              onClick={() => pickTime(s.time)}
+                              style={{ animationDelay: `${index * 35}ms` }}
+                              className="anim-up pressable flex items-center justify-between py-3 px-3.5 rounded-xl border-2 border-dashed border-emerald-300 bg-emerald-50/40 hover:border-emerald-500 hover:bg-emerald-50 text-left transition-all cursor-pointer group"
+                            >
+                              <span className="flex items-center gap-3">
+                                <span className="font-mono text-sm font-bold text-emerald-800 shrink-0">
+                                  {s.time}
+                                </span>
+                                <span className="text-xs font-semibold text-emerald-700">
+                                  Disponible
+                                </span>
+                              </span>
+                              <span className="text-[11px] font-bold text-white bg-emerald-600 group-hover:bg-emerald-700 px-3 py-1.5 rounded-lg transition-colors">
+                                Reservar
+                              </span>
+                            </button>
+                          );
+                        })}
+                    </div>
+                  )}
+                  {!loading && slots.filter((s) => s.is_available).length === 0 && (
+                    <p className="text-xs text-gray-400 italic text-center py-4">
+                      No hay horarios libres en este día. Elegí otro día de la lista.
+                    </p>
+                  )}
+                </>
+              )}
+            </section>
+          )}
+
+          {/* ═══════════ ¿CAMBIAR TURNO O RESERVAR PARA OTRO? ═══════════ */}
+          {step === 'confirmMove' && identified && activeBooking && pendingTime && (
+            <section className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 anim-zoom">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
+                  <CalendarDays className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold">¿Cambiar tu turno?</h2>
+                  <p className="text-xs text-gray-500 mt-0.5">Elegiste un horario distinto al que tenés reservado.</p>
+                </div>
+              </div>
+
+              <div className="mt-4 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-xs text-gray-600 space-y-1">
+                <p className="flex items-center justify-between">
+                  <span className="text-gray-400">Turno actual</span>
+                  <span className="font-bold text-gray-800">
+                    {formatDateDisplay(activeBooking.date)} · {activeBooking.time}
+                  </span>
+                </p>
+                <p className="flex items-center justify-between">
+                  <span className="text-gray-400">Nuevo horario</span>
+                  <span className="font-bold text-emerald-700">
+                    {formatDateDisplay(selectedDate)} · {pendingTime} h
+                  </span>
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-2.5 mt-5">
+                <button
+                  type="button"
+                  onClick={confirmMoveForSelf}
+                  className="pressable w-full py-3.5 bg-gray-900 hover:bg-black text-white text-sm font-bold rounded-xl transition-all cursor-pointer"
+                >
+                  ✂️ Sí, soy yo — cambiar mi turno
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmMoveForOther}
+                  className="pressable w-full py-3.5 bg-white border-2 border-gray-200 hover:border-blue-400 text-gray-800 text-sm font-bold rounded-xl transition-all cursor-pointer"
+                >
+                  👤 Es para otra persona
+                </button>
+                <button
+                  type="button"
+                  onClick={backToAgenda}
+                  className="py-2 text-xs font-bold text-gray-400 hover:text-gray-700 cursor-pointer"
+                >
+                  Volver a la agenda
+                </button>
+              </div>
+              <p className="mt-4 text-[10px] text-gray-400 text-center">
+                Si elegís "es para vos", tus datos y referencia se trasladan al nuevo horario.
+              </p>
+            </section>
+          )}
+
+          {/* ═══════════ IDENTIFICACIÓN (después de elegir hora) ═══════════ */}
           {step === 'identify' && (
             <section className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 anim-up">
-              <h2 className="text-base font-bold">¿Quién viene?</h2>
+              <button
+                type="button"
+                onClick={backToAgenda}
+                className="flex items-center gap-1 text-[11px] font-bold text-gray-500 hover:text-gray-800 mb-3 cursor-pointer"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" /> Volver a la agenda
+              </button>
+
+              <div className="flex items-center justify-between bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 mb-4">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600">
+                    El turno que elegiste
+                  </p>
+                  <p className="text-sm font-bold text-emerald-900">
+                    {formatDateDisplay(selectedDate)} · {pendingTime} h
+                  </p>
+                </div>
+                <Clock className="w-5 h-5 text-emerald-300" />
+              </div>
+
+              <h2 className="text-base font-bold">
+                {identifyForOther ? '¿Quién va a venir?' : '¿Quién viene?'}
+              </h2>
               <p className="text-xs text-gray-500 mt-1 mb-4">
-                Identificamos tu última visita para darte mejor atención.
+                {identifyForOther
+                  ? 'Ingresá los datos de la persona que va a asistir. Su turno se reservará a su nombre.'
+                  : 'Identificamos tu última visita para darte mejor atención.'}
               </p>
               <form onSubmit={handleIdentify} className="space-y-3">
                 <div className="relative">
@@ -391,14 +805,14 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
             </section>
           )}
 
-          {/* ── BIENVENIDA ── */}
-          {identified && step !== 'identify' && step !== 'done' && (
+          {/* ═══════════ BIENVENIDA (al identificarse) ═══════════ */}
+          {identified && (step === 'reference' || step === 'manage') && (
             <section className="rounded-2xl bg-gradient-to-br from-gray-900 to-gray-700 text-white p-5 shadow-sm anim-up">
               {identified.isNew ? (
                 <>
                   <p className="text-sm font-bold">¡Hola {identified.client.full_name}! 👋</p>
                   <p className="text-xs text-gray-300 mt-1">
-                    Bienvenido/a. Contanos qué corte te gustaría y elegí tu horario.
+                    Bienvenido/a. Contanos qué corte te gustaría y confirmá tu horario.
                   </p>
                 </>
               ) : (
@@ -419,9 +833,16 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
             </section>
           )}
 
-          {/* ── PASO 2: MI TURNO (gestión) ── */}
+          {/* ═══════════ MI TURNO (gestión) ═══════════ */}
           {step === 'manage' && activeBooking && (
             <section className="bg-white rounded-2xl shadow-sm border border-gray-200 p-5 anim-up">
+              <button
+                type="button"
+                onClick={backToAgenda}
+                className="flex items-center gap-1 text-[11px] font-bold text-gray-500 hover:text-gray-800 mb-3 cursor-pointer"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" /> Ver agenda
+              </button>
               <div className="flex items-center justify-between bg-gray-900 text-white rounded-xl px-4 py-3.5">
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">
@@ -461,7 +882,11 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
               <div className="flex items-center gap-2 mt-4 pt-4 border-t border-gray-100">
                 <button
                   type="button"
-                  onClick={startEdit}
+                  onClick={() => {
+                    setIsEditing(true);
+                    setPendingTime(null);
+                    setStep('agenda');
+                  }}
                   className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
                 >
                   ✏️ Cambiar mi turno
@@ -519,179 +944,27 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
             </section>
           )}
 
-          {/* ── PASO 3: ELEGIR DÍA Y HORARIO ── */}
-          {step === 'book' && identified && (
-            <section className="bg-white rounded-2xl shadow-sm border border-gray-200 p-5 anim-up">
-              {isEditing && (
-                <button
-                  type="button"
-                  onClick={backToManage}
-                  className="flex items-center gap-1 text-[11px] font-bold text-gray-500 hover:text-gray-800 mb-3 cursor-pointer"
-                >
-                  <ArrowLeft className="w-3.5 h-3.5" /> Volver a mi turno
-                </button>
-              )}
-              <h2 className="text-sm font-bold flex items-center gap-2">
-                <CalendarDays className="w-4 h-4 text-gray-400" />
-                Días habilitados
-              </h2>
-              {recentBookings.length > 0 && (
-                <div className="mt-3 bg-gray-50/80 border border-gray-200 rounded-xl px-4 py-3">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
-                    📋 Tus turnos
-                  </p>
-                  <ul className="mt-2 space-y-1.5">
-                    {recentBookings.slice(0, 5).map((b) => (
-                      <li
-                        key={b.id}
-                        className="flex items-center justify-between text-xs text-gray-600"
-                      >
-                        <span className="truncate capitalize">
-                          {formatDateDisplay(b.date)} ·{' '}
-                          <span className="font-mono font-bold text-gray-800">{b.time}</span>
-                        </span>
-                        <span
-                          className={`shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                            b.date >= today
-                              ? 'bg-emerald-100 text-emerald-700'
-                              : b.status === 'attended'
-                                ? 'bg-blue-100 text-blue-700'
-                                : 'bg-gray-100 text-gray-500'
-                          }`}
-                        >
-                          {b.date >= today
-                            ? 'Próximo'
-                            : b.status === 'attended'
-                              ? 'Atendido'
-                              : 'Pasado'}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {openDayList.length === 0 ? (
-                <p className="text-xs text-gray-400 italic text-center py-6">
-                  Todavía no hay días habilitados para reservar. ¡Volvé pronto! 💈
-                </p>
-              ) : (
-                <>
-                  <div className="flex gap-2 overflow-x-auto pb-2 mt-3">
-                    {openDayList.map((d) => (
-                      <button
-                        key={d.dateStr}
-                        type="button"
-                        onClick={() => setSelectedDate(d.dateStr)}
-                        className={`shrink-0 px-3.5 py-2 rounded-xl text-center transition-all cursor-pointer border anim-pop ${
-                          selectedDate === d.dateStr
-                            ? 'bg-gray-900 text-white border-gray-900'
-                            : 'bg-white text-gray-700 border-gray-200 hover:border-gray-400'
-                        }`}
-                      >
-                        <span className="block text-[10px] font-bold uppercase tracking-wide opacity-70">
-                          {d.weekday}
-                        </span>
-                        <span className="block text-sm font-bold">{d.dateStr.slice(8)}</span>
-                      </button>
-                    ))}
-                  </div>
-
-                  {appointments.length > 0 && (
-                    <div className="mt-4 bg-gray-50/80 border border-gray-200 rounded-xl px-4 py-3 anim-up">
-                      <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
-                        💈 Ya reservaron su turno para este día
-                      </p>
-                      <ul className="mt-2 space-y-1.5">
-                        {appointments.map((a) => (
-                          <li
-                            key={`${a.time}-${a.name}`}
-                            className="flex items-center justify-between text-xs text-gray-600"
-                          >
-                            <span className="flex items-center gap-2 min-w-0">
-                              <span className="font-mono font-bold text-gray-800 shrink-0">
-                                {a.time}
-                              </span>
-                              <span className="truncate">{a.name}</span>
-                            </span>
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
-                          </li>
-                        ))}
-                      </ul>
-                      <p className="mt-2 text-[10px] text-gray-400 italic">
-                        Los turnos se van llenando — asegurá el tuyo.
-                      </p>
-                    </div>
-                  )}
-
-                  <h3 className="text-sm font-bold flex items-center gap-2 mt-5">
-                    <Clock className="w-4 h-4 text-gray-400" />
-                    Horarios libres
-                  </h3>
-                  {loading ? (
-                    <p className="text-xs text-gray-400 italic py-6 text-center anim-fade">
-                      Cargando horarios…
-                    </p>
-                  ) : (
-                    <div className="grid grid-cols-4 gap-2 mt-3 anim-up">
-                      {slots
-                        .filter((s) => s.is_available)
-                        .filter((s) => !isPastTime(s.time))
-                        .filter(
-                          (s) =>
-                            !appointments.some((a) => a.time === s.time) ||
-                            (isEditing && activeBooking?.time === s.time),
-                        )
-                        .map((s) => (
-                          <button
-                            key={s.time}
-                            type="button"
-                            onClick={() => {
-                              setSelectedTime(s.time);
-                              setStep('reference');
-                            }}
-                            className={`py-2.5 text-sm font-bold font-mono rounded-xl border transition-all cursor-pointer ${
-                              selectedTime === s.time
-                                ? 'border-gray-900 bg-gray-900 text-white'
-                                : 'border-gray-200 bg-white text-gray-800 hover:border-blue-500 hover:text-blue-600'
-                            }`}
-                          >
-                            {s.time}
-                          </button>
-                        ))}
-                    </div>
-                  )}
-                  {!loading && slots.filter((s) => s.is_available).length === 0 && (
-                    <p className="text-xs text-gray-400 italic text-center py-4">
-                      Este día no tiene horarios disponibles todavía.
-                    </p>
-                  )}
-                </>
-              )}
-            </section>
-          )}
-
-          {/* ── PASO 4: REFERENCIA ── */}
-          {step === 'reference' && identified && selectedTime && (
+          {/* ═══════════ REFERENCIA DEL CORTE ═══════════ */}
+          {step === 'reference' && identified && pendingTime && (
             <section className="bg-white rounded-2xl shadow-sm border border-gray-200 p-5 anim-up">
               <button
                 type="button"
                 onClick={() => {
-                  setStep('book');
-                  setSelectedTime(null);
+                  setPendingTime(null);
+                  setStep('agenda');
                 }}
                 className="flex items-center gap-1 text-[11px] font-bold text-gray-500 hover:text-gray-800 mb-3 cursor-pointer"
               >
-                <ArrowLeft className="w-3.5 h-3.5" />
-                Cambiar horario
+                <ArrowLeft className="w-3.5 h-3.5" /> Cambiar horario
               </button>
 
               <div className="flex items-center justify-between bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 mb-4">
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-wider text-blue-600">
-                    Tu turno
+                    {isEditing ? 'Nuevo turno' : 'Tu turno'}
                   </p>
                   <p className="text-sm font-bold text-blue-900">
-                    {formatDateDisplay(selectedDate)} · {selectedTime} h
+                    {formatDateDisplay(selectedDate)} · {pendingTime} h
                   </p>
                 </div>
                 <Clock className="w-5 h-5 text-blue-300" />
@@ -787,10 +1060,10 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
             </section>
           )}
 
-          {/* ── PASO 5: CONFIRMADO ── */}
+          {/* ═══════════ CONFIRMADO ═══════════ */}
           {step === 'done' && identified && doneBooking && (
             <section className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 text-center anim-up">
-              <div className="w-16 h-16 rounded-full bg-green-100 text-green-600 flex items-center justify-center mx-auto anim-pop">
+              <div className="w-16 h-16 rounded-full bg-green-100 text-green-600 flex items-center justify-center mx-auto anim-success">
                 <CheckCircle2 className="w-8 h-8" />
               </div>
               <h2 className="text-lg font-bold mt-3">¡Turno confirmado! ✂️</h2>
@@ -842,17 +1115,17 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                 )}
                 <button
                   type="button"
-                  onClick={resetBooking}
-                  className="py-2.5 text-xs font-bold text-gray-500 hover:text-gray-800 cursor-pointer"
+                  onClick={backToAgendaAfterDone}
+                  className="py-2.5 text-xs font-bold text-blue-600 hover:text-blue-800 cursor-pointer"
                 >
-                  Reservar con otro número
+                  ← Volver a la agenda del día
                 </button>
               </div>
             </section>
           )}
 
-          {/* ── REGLAS ── */}
-          {(step === 'identify' || step === 'book' || step === 'manage') && (
+          {/* ═══════════ REGLAS ═══════════ */}
+          {step !== 'reference' && step !== 'done' && (
             <details className="bg-white rounded-2xl shadow-sm border border-gray-200 p-4 anim-up">
               <summary className="text-xs font-bold text-gray-700 cursor-pointer select-none">
                 📖 ¿Cómo funciona? (reglas)

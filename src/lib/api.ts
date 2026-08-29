@@ -155,29 +155,87 @@ export const getOrCreateClient = async (
 
   if (existing) {
     const client = existing;
-    if (client.full_name !== name || (cleanEmail && client.email !== cleanEmail)) {
-      await sb
+    // El nombre canónico (guardado) NUNCA se sobreescribe: así la vista del barbero
+    // y la del cliente muestran siempre el mismo nombre para la misma cita.
+    if (cleanEmail && client.email !== cleanEmail) {
+      const { error: updErr } = await sb
         .from('clients')
-        .update({ full_name: name, ...(cleanEmail ? { email: cleanEmail } : {}) })
+        .update({ email: cleanEmail })
         .eq('id', client.id);
-      client.full_name = name;
-      if (cleanEmail) client.email = cleanEmail;
+      if (updErr && !/column |PGRST204|does not exist/i.test(updErr.message)) throw updErr;
+      client.email = cleanEmail;
     }
     const days = client.last_visit ? daysSince(client.last_visit) : null;
     return { client, isNew: false, daysSinceLastCut: days };
   }
 
-  const { data: created, error } = await sb
-    .from('clients')
-    .insert({ full_name: name, phone: cleanPhone, email: cleanEmail || null })
-    .select('*')
-    .single();
-  if (error) throw error;
+  const insertRow: { full_name: string; phone: string | null; email?: string | null } =
+    cleanEmail
+      ? { full_name: name, phone: cleanPhone, email: cleanEmail }
+      : { full_name: name, phone: cleanPhone };
+  const { data: created, error } = await sb.from('clients').insert(insertRow).select('*').single();
+  if (error) {
+    // Compatibilidad: si la base aún no tiene la columna email, reintenta sin ella
+    if (/column |PGRST204|does not exist/i.test(error.message)) {
+      const { data: created2, error: error2 } = await sb
+        .from('clients')
+        .insert({ full_name: name, phone: cleanPhone })
+        .select('*')
+        .single();
+      if (error2) throw error2;
+      return {
+        client: created2 as ClientRecord,
+        isNew: true,
+        daysSinceLastCut: null,
+      };
+    }
+    throw error;
+  }
   return {
     client: created as ClientRecord,
     isNew: true,
     daysSinceLastCut: null,
   };
+};
+
+/* ─────────────────────────────────────────────
+ * Sesión del cliente (caché local para no volver a identificarse)
+ * ───────────────────────────────────────────── */
+export interface ClientSession {
+  clientId: string;
+  fullName: string;
+  phone: string; // solo dígitos
+  email: string;
+  savedAt: string;
+}
+
+const CLIENT_SESSION_KEY = 'barber_client_session_v1';
+
+export const saveClientSession = (session: ClientSession): void => {
+  try {
+    localStorage.setItem(CLIENT_SESSION_KEY, JSON.stringify(session));
+  } catch {
+    // almacenamiento no disponible
+  }
+};
+
+export const loadClientSession = (): ClientSession | null => {
+  try {
+    const raw = localStorage.getItem(CLIENT_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ClientSession;
+    return parsed && parsed.clientId ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+export const clearClientSession = (): void => {
+  try {
+    localStorage.removeItem(CLIENT_SESSION_KEY);
+  } catch {
+    // ignorar
+  }
 };
 
 export const searchClients = async (query: string): Promise<ClientRecord[]> => {
@@ -300,7 +358,40 @@ export const createBooking = async (input: BookingInput): Promise<AppointmentRec
   const referenceUrl = sanitizeReferenceUrl(input.referenceUrl || '');
   const note = sanitizeNote(input.note || '');
 
-  // Regla: una sola reserva activa por cliente (evita saturación)
+  // ── Camino atómico: función SQL con bloqueo (evita carreras entre dispositivos) ──
+  try {
+    const { data, error } = await sb.rpc('create_appointment', {
+      p_client_id: input.clientId,
+      p_date: input.date,
+      p_time: input.time,
+      p_reference_url: referenceUrl || null,
+      p_reference_image_url: input.referenceImageUrl || null,
+      p_note: note || null,
+    });
+    if (error) {
+      if (/SLOT_TAKEN/.test(error.message)) {
+        throw new Error('Ese horario acaba de ser tomado. Elegí otro.');
+      }
+      if (/CLIENT_HAS_BOOKING/.test(error.message)) {
+        throw new Error('Ya tenés un turno activo. Podés editarlo o cancelarlo desde la app.');
+      }
+      // La función no existe en la base (schema viejo) → usar el camino clásico
+      if (!/does not exist|42883|PGRST202/i.test(error.message)) throw error;
+    } else if (data) {
+      const { data: row } = await sb
+        .from('appointments')
+        .select('*, clients(full_name, phone, last_visit)')
+        .eq('id', data as string)
+        .single();
+      if (row) return row as AppointmentRecord;
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : '';
+    if (/Ese horario|Ya tenés un turno/.test(message)) throw e;
+    // Cualquier otro error del RPC: continuar con el camino clásico
+  }
+
+  // ── Camino clásico (compatibilidad con base sin la función SQL) ──
   const active = await getActiveBooking(input.clientId);
   if (active) {
     throw new Error('Ya tenés un turno activo. Podés editarlo o cancelarlo desde la app.');
@@ -349,7 +440,38 @@ export const updateBooking = async (
   const sb = getSupabase();
   const referenceUrl = sanitizeReferenceUrl(input.referenceUrl || '');
 
-  // El horario destino no debe estar ocupado por otra cita activa
+  // ── Camino atómico: función SQL con bloqueo ──
+  try {
+    const { data, error } = await sb.rpc('move_appointment', {
+      p_id: id,
+      p_date: input.date,
+      p_time: input.time,
+      p_reference_url: referenceUrl || null,
+      p_reference_image_url: input.referenceImageUrl || null,
+      p_note: sanitizeNote(input.note || '') || null,
+    });
+    if (error) {
+      if (/SLOT_TAKEN/.test(error.message)) {
+        throw new Error('Ese horario acaba de ser tomado por otra persona. Elegí otro.');
+      }
+      if (/APPOINTMENT_NOT_FOUND/.test(error.message)) {
+        throw new Error('Tu turno ya no existe. Volvé a la agenda e intentá de nuevo.');
+      }
+      if (!/does not exist|42883|PGRST202/i.test(error.message)) throw error;
+    } else if (data) {
+      const { data: row } = await sb
+        .from('appointments')
+        .select('*, clients(full_name, phone, last_visit)')
+        .eq('id', data as string)
+        .single();
+      if (row) return row as AppointmentRecord;
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : '';
+    if (/Ese horario|ya no existe/.test(message)) throw e;
+  }
+
+  // ── Camino clásico (compatibilidad) ──
   const { data: taken } = await sb
     .from('appointments')
     .select('id')
@@ -375,7 +497,12 @@ export const updateBooking = async (
     .eq('id', id)
     .select('*, clients(full_name, phone, last_visit)')
     .single();
-  if (error) throw error;
+  if (error) {
+    if (error.code === '23505') {
+      throw new Error('Ese horario acaba de ser tomado por otra persona. Elegí otro.');
+    }
+    throw error;
+  }
   return data as AppointmentRecord;
 };
 
