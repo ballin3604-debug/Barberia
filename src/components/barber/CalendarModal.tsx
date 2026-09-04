@@ -197,7 +197,7 @@ export const CalendarModal: React.FC<CalendarModalProps> = ({ isOpen, onClose, o
           </button>
         </div>
 
-        <div className="flex items-center gap-4 text-[10px] font-semibold text-gray-500">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[10px] font-semibold text-gray-500">
           <span className="flex items-center gap-1.5">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Abierto
           </span>

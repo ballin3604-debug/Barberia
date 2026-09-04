@@ -15,6 +15,7 @@ export interface ServiceItem {
 export interface BusinessSettings {
   businessName: string;
   phone: string; // WhatsApp del barbero con código de país, ej: +525512345678
+  address: string; // Dirección de la barbería (para el link de GPS / Google Maps)
   webhookUrl: string; // URL del workflow de Pabbly Connect (opcional)
   webhookEnabled: boolean;
   pin: string; // PIN opcional para proteger la vista del barbero (solo local)
@@ -58,6 +59,22 @@ export interface SlotRecord {
 export interface DayConfigRecord {
   date: string;
   is_open: boolean;
+}
+
+/* ── Historial de cortes realizados ─────────────────── */
+export interface HaircutRecord {
+  id: string;
+  date: string; // YYYY-MM-DD (día en que se hizo el corte)
+  client_id: string | null;
+  client_name: string;
+  service_name: string; // tipo de corte
+  minutes: number | null; // cuánto tardó (el barbero lo puede cargar después)
+  price: string | null;
+  appointment_id: string | null;
+  note: string | null;
+  created_at: string;
+  // join con clients
+  clients?: Pick<ClientRecord, 'id' | 'full_name' | 'phone'> | null;
 }
 
 /* ── Modelos legacy (localStorage) ─────────────────────── */

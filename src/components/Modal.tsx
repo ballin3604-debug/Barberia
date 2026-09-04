@@ -77,15 +77,19 @@ export const Modal: React.FC<ModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
-      <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
-      <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={title ? titleId : undefined}
-        className={`relative bg-white rounded-xl shadow-xl border border-gray-200 w-full ${maxWidth} overflow-hidden flex flex-col max-h-[90vh] anim-pop`}
-      >
+    <div
+      className="fixed inset-0 z-50 overflow-y-auto bg-black/40 backdrop-blur-xs"
+      onClick={onClose}
+    >
+      <div className="min-h-full flex items-center justify-center p-3 sm:p-6">
+        <div
+          ref={panelRef}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={title ? titleId : undefined}
+          onClick={(e) => e.stopPropagation()}
+          className={`relative my-auto bg-white rounded-xl shadow-xl border border-gray-200 w-full ${maxWidth} overflow-hidden flex flex-col max-h-[90svh] anim-pop`}
+        >
         {title && (
           <div
             className={`px-6 py-4 border-b border-gray-100 flex items-center justify-between shrink-0 ${headerClassName}`}
@@ -103,7 +107,8 @@ export const Modal: React.FC<ModalProps> = ({
             </button>
           </div>
         )}
-        <div className={`overflow-y-auto flex-1 ${contentClassName}`}>{children}</div>
+          <div className={`overflow-y-auto flex-1 ${contentClassName}`}>{children}</div>
+        </div>
       </div>
     </div>
   );

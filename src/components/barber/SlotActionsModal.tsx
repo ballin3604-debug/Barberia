@@ -290,7 +290,7 @@ export const SlotActionsModal: React.FC<SlotActionsModalProps> = ({
           </p>
         )}
 
-        <div className="pt-2 border-t border-gray-100 flex items-center justify-between">
+        <div className="pt-2 border-t border-gray-100 flex flex-wrap items-center justify-between gap-2">
           <button
             type="button"
             onClick={handleToggleVisibility}

@@ -1,15 +1,15 @@
 {
-  "name": "Agenda de Barbería",
-  "short_name": "Barbería",
+  "name": "The Best Barbershop",
+  "short_name": "Barbershop",
   "start_url": "/?view=client",
   "display": "standalone",
   "background_color": "#F8FAFC",
   "theme_color": "#111827",
   "icons": [
     {
-      "src": "/icon.svg",
+      "src": "/logo.jpg",
       "sizes": "any",
-      "type": "image/svg+xml",
+      "type": "image/jpeg",
       "purpose": "any"
     }
   ]

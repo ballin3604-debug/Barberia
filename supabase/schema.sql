@@ -168,7 +168,7 @@ create table if not exists public.day_config (
 -- ── 5. CONFIGURACIÓN PÚBLICA DEL NEGOCIO ───────────────────────
 create table if not exists public.business_settings (
   id int primary key default 1,
-  business_name text not null default 'Barbería El Maestro',
+  business_name text not null default 'THE BEST BARBERSHOP',
   phone text not null default '',      -- WhatsApp del barbero (código de país)
   webhook_url text not null default '',-- URL del workflow de Pabbly Connect
   webhook_enabled boolean not null default false,
@@ -177,6 +177,10 @@ create table if not exists public.business_settings (
 
 insert into public.business_settings (id) values (1)
   on conflict (id) do nothing;
+
+-- Dirección / link de GPS (se sincroniza con la app para el botón del cliente)
+alter table public.business_settings
+  add column if not exists address text not null default '';
 
 -- ── 5b. TOKENS DE NOTIFICACIÓN WEB PUSH ────────────────────────
 create table if not exists public.push_tokens (
@@ -261,3 +265,35 @@ create policy "public read references" on storage.objects
 drop policy if exists "public upload references" on storage.objects;
 create policy "public upload references" on storage.objects
   for insert with check (bucket_id = 'references');
+
+-- ── 9. HISTORIAL DE CORTES REALIZADOS ──────────────────
+--  Tabla tipo base de datos para que el barbero vea qué cortes
+--  se hicieron: fecha, cliente, tipo de corte y minutos que tardó
+--  (los minutos se pueden cargar al registrar o después).
+create table if not exists public.haircuts (
+  id uuid primary key default gen_random_uuid(),
+  date date not null,                      -- día en que se hizo el corte
+  client_id uuid references public.clients (id) on delete set null,
+  client_name text not null,               -- nombre (también para clientes sin ficha)
+  service_name text not null,              -- tipo de corte
+  minutes integer check (minutes is null or (minutes >= 1 and minutes <= 480)),
+  price text,                              -- ej: '$10.00' (opcional)
+  appointment_id uuid references public.appointments (id) on delete set null,
+  note text,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists haircuts_date_idx on public.haircuts (date desc);
+create index if not exists haircuts_client_idx on public.haircuts (client_id);
+
+alter table public.haircuts enable row level security;
+
+drop policy if exists "public access haircuts" on public.haircuts;
+create policy "public access haircuts" on public.haircuts
+  for all using (true) with check (true);
+
+do $$
+begin
+  alter publication supabase_realtime add table public.haircuts;
+exception when duplicate_object then null;
+end $$;

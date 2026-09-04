@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { AppointmentRecord, SlotRecord } from '../../types';
+import { AppointmentRecord, ServiceItem, SlotRecord } from '../../types';
 import {
   ensureDaySlots,
   getDayConfig,
@@ -18,12 +18,14 @@ import { SlotActionsModal } from './SlotActionsModal';
 import { HoursEditorModal } from './HoursEditorModal';
 import { ClientsPanelModal } from './ClientsPanelModal';
 import { CalendarModal } from './CalendarModal';
+import { CutsHistoryTable } from './CutsHistoryTable';
 import { useToast } from '../Toast';
 import {
   BarChart3,
   CalendarDays,
   ChevronLeft,
   ChevronRight,
+  History,
   Link2,
   Scissors,
   Settings2,
@@ -33,6 +35,7 @@ import {
 
 interface BarberAgendaViewProps {
   businessName: string;
+  services: ServiceItem[];
   onOpenSettings: () => void;
   onOpenReports: () => void;
 }
@@ -51,11 +54,13 @@ const PERIODS = [
 
 export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
   businessName,
+  services,
   onOpenSettings,
   onOpenReports,
 }) => {
   const showToast = useToast();
   const today = getTodayDateString();
+  const [agendaView, setAgendaView] = useState<'agenda' | 'cuts'>('agenda');
   const [selectedDate, setSelectedDate] = useState(today);
   const [slots, setSlots] = useState<SlotRecord[]>([]);
   const [appointments, setAppointments] = useState<AppointmentRecord[]>([]);
@@ -150,11 +155,13 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
     <div className="min-h-screen bg-[#F8FAFC] text-[#0F172A] flex flex-col font-sans selection:bg-blue-100">
       {/* Header */}
       <header className="bg-white border-b border-gray-200/80 px-4 sm:px-8 py-3.5 sticky top-0 z-30 shadow-sm">
-        <div className="max-w-6xl mx-auto flex items-center justify-between gap-3">
+        <div className="max-w-6xl mx-auto flex items-center justify-between gap-2 sm:gap-3">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-8 h-8 rounded-lg bg-gray-900 text-white flex items-center justify-center shrink-0">
-              <Scissors className="w-4 h-4" />
-            </div>
+            <img
+              src="/logo.jpg"
+              alt={businessName}
+              className="w-9 h-9 rounded-lg object-cover shrink-0"
+            />
             <div className="min-w-0">
               <h1 className="text-base font-bold tracking-tight text-gray-900 truncate">
                 {businessName}
@@ -193,7 +200,7 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
             <button
               type="button"
               onClick={handleShare}
-              className="ml-1 flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-gray-900 hover:bg-black text-white shadow-sm transition-colors cursor-pointer"
+              className="ml-1 flex items-center gap-1.5 px-3 sm:px-3.5 py-2 rounded-xl text-xs font-bold bg-gray-900 hover:bg-black text-white shadow-sm transition-colors cursor-pointer"
               title="Copiar el link de reserva para tus clientes"
             >
               <Share2 className="w-3.5 h-3.5 text-emerald-400" />
@@ -227,6 +234,19 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
                 aria-label="Ver reportes"
               >
                 <BarChart3 className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setAgendaView(agendaView === 'cuts' ? 'agenda' : 'cuts')}
+                className={`p-2 rounded-lg cursor-pointer ${
+                  agendaView === 'cuts'
+                    ? 'bg-gray-900 text-white'
+                    : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100'
+                }`}
+                title="Personas atendidas (tabla)"
+                aria-label="Ver personas atendidas"
+              >
+                <History className="w-4 h-4" />
               </button>
               <button
                 type="button"
@@ -266,8 +286,8 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
         </div>
 
         {/* Day strip: estado + stats + acciones móviles */}
-        <div className="max-w-6xl mx-auto flex items-center justify-between gap-3 mt-2.5">
-          <div className="flex items-center gap-2.5">
+        <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-x-3 gap-y-2 mt-2.5">
+          <div className="flex items-center gap-2.5 shrink-0">
             <button
               type="button"
               onClick={handleToggleDay}
@@ -283,39 +303,46 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
               {freeCount} libres · {bookedCount} agendados
             </span>
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1">
             <button
               type="button"
               onClick={() => setShowHoursEditor(true)}
-              className="text-[11px] font-bold text-gray-600 hover:text-gray-900 px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
+              className="text-[10px] sm:text-[11px] font-bold text-gray-600 hover:text-gray-900 px-2 sm:px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer whitespace-nowrap"
             >
               ✎ Horarios
             </button>
             <button
               type="button"
               onClick={() => setShowCalendar(true)}
-              className="md:hidden text-[11px] font-bold text-gray-600 hover:text-gray-900 px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
+              className="md:hidden text-[10px] sm:text-[11px] font-bold text-gray-600 hover:text-gray-900 px-2 sm:px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer whitespace-nowrap"
             >
               📅 Días
             </button>
             <button
               type="button"
               onClick={() => setShowClients(true)}
-              className="md:hidden text-[11px] font-bold text-gray-600 hover:text-gray-900 px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
+              className="md:hidden text-[10px] sm:text-[11px] font-bold text-gray-600 hover:text-gray-900 px-2 sm:px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer whitespace-nowrap"
             >
               Clientes
             </button>
             <button
               type="button"
               onClick={onOpenReports}
-              className="md:hidden text-[11px] font-bold text-gray-600 hover:text-gray-900 px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
+              className="md:hidden text-[10px] sm:text-[11px] font-bold text-gray-600 hover:text-gray-900 px-2 sm:px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer whitespace-nowrap"
             >
               Reportes
             </button>
             <button
               type="button"
+              onClick={() => setAgendaView(agendaView === 'cuts' ? 'agenda' : 'cuts')}
+              className="md:hidden text-[10px] sm:text-[11px] font-bold text-gray-600 hover:text-gray-900 px-2 sm:px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer whitespace-nowrap"
+            >
+              {agendaView === 'cuts' ? 'Agenda' : 'Cortes'}
+            </button>
+            <button
+              type="button"
               onClick={onOpenSettings}
-              className="md:hidden text-[11px] font-bold text-gray-600 hover:text-gray-900 px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
+              className="md:hidden text-[10px] sm:text-[11px] font-bold text-gray-600 hover:text-gray-900 px-2 sm:px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer whitespace-nowrap"
             >
               Ajustes
             </button>
@@ -325,6 +352,10 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
 
       {/* Main */}
       <main className="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-6">
+        {agendaView === 'cuts' ? (
+          <CutsHistoryTable services={services} />
+        ) : (
+          <>
         {error && (
           <p
             role="alert"
@@ -382,6 +413,8 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
               </div>
             ))}
           </div>
+        )}
+          </>
         )}
       </main>
 

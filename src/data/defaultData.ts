@@ -17,8 +17,9 @@ export const BARBER_SERVICES: ServiceItem[] = [
  * Configuración del negocio (localStorage)
  * ───────────────────────────────────────────── */
 export const DEFAULT_SETTINGS: BusinessSettings = {
-  businessName: 'Barbería El Maestro',
+  businessName: 'THE BEST BARBERSHOP',
   phone: '',
+  address: '',
   webhookUrl: '',
   webhookEnabled: false,
   pin: '',
@@ -36,6 +37,7 @@ export const loadSettings = (): BusinessSettings => {
       return {
         businessName: parsed.businessName || DEFAULT_SETTINGS.businessName,
         phone: parsed.phone || localStorage.getItem(LEGACY_PHONE_KEY) || '',
+        address: parsed.address || '',
         webhookUrl: parsed.webhookUrl || '',
         webhookEnabled: parsed.webhookEnabled ?? false,
         pin: parsed.pin ?? '',

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AppointmentRecord } from '../../types';
 import {
   buildConfirmationText,
+  buildMapsLink,
   buildRulesText,
   buildWaLink,
   clearClientSession,
@@ -35,16 +36,16 @@ import {
   ImagePlus,
   Link2,
   Mail,
+  MapPin,
   MessageCircle,
   Phone,
-  Scissors,
   Sparkles,
   User,
 } from 'lucide-react';
-
 interface ClientBookingViewProps {
   businessName: string;
   barberPhone: string;
+  address: string;
   webhookEnabled: boolean;
   webhookUrl: string;
   initialDate?: string;
@@ -57,6 +58,7 @@ const ACCEPTED_IMAGES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', '
 export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
   businessName,
   barberPhone,
+  address,
   webhookEnabled,
   webhookUrl,
   initialDate,
@@ -436,13 +438,27 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
       {/* Header */}
       <header className="bg-gray-900 text-white px-5 py-6 pb-16">
         <div className="max-w-md mx-auto flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center">
-            <Scissors className="w-5 h-5" />
-          </div>
+          <img
+            src="/logo.jpg"
+            alt={businessName}
+            className="w-11 h-11 rounded-xl object-cover shrink-0"
+          />
           <div>
             <h1 className="text-lg font-bold tracking-tight leading-tight">{businessName}</h1>
             <p className="text-xs text-gray-300 font-medium">Reservá tu turno en 1 minuto</p>
           </div>
+        </div>
+        <div className="max-w-md mx-auto mt-3">
+          <a
+            href={buildMapsLink(address, businessName)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-[11px] font-bold text-white transition-colors"
+            title="Abrir Google Maps para llegar a la barbería"
+          >
+            <MapPin className="w-3.5 h-3.5 text-emerald-400" />
+            ¿No sabes cómo llegar? ¡Encuéntranos aquí!
+          </a>
         </div>
       </header>
 

@@ -3,11 +3,12 @@ import {
   BusinessSettings,
   ClientRecord,
   DayConfigRecord,
+  HaircutRecord,
   SlotRecord,
   TimeSlot,
 } from '../types';
 import { getSupabase, isSupabaseConfigured } from './supabase';
-import { STANDARD_HOURS, getTodayDateString } from '../data/defaultData';
+import { STANDARD_HOURS, addDaysToDateStr, getTodayDateString } from '../data/defaultData';
 
 /* ─────────────────────────────────────────────
  * Utilidades
@@ -329,6 +330,25 @@ export const listActiveBookingsBetween = async (
   return (data ?? []) as { date: string; time: string }[];
 };
 
+/** Turnos marcados como atendidos en los últimos días (para fichar el corte realizado). */
+export const listRecentAttended = async (
+  days = 30,
+  limit = 100,
+): Promise<AppointmentRecord[]> => {
+  const sb = getSupabase();
+  const from = addDaysToDateStr(getTodayDateString(), -(days - 1));
+  const { data, error } = await sb
+    .from('appointments')
+    .select('*, clients(full_name, phone, last_visit)')
+    .eq('status', 'attended')
+    .gte('date', from)
+    .order('date', { ascending: false })
+    .order('time', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []) as AppointmentRecord[];
+};
+
 /** Cita no cancelada anterior a hoy (turno viejo sin atender). */
 const getStaleBooking = async (clientId: string): Promise<AppointmentRecord | null> => {
   const sb = getSupabase();
@@ -522,6 +542,104 @@ export const isSlotTaken = (appointments: AppointmentRecord[], time: string): bo
   appointments.some((a) => a.time === time && a.status !== 'cancelled');
 
 /* ─────────────────────────────────────────────
+ * Historial de cortes realizados
+ * ───────────────────────────────────────────── */
+export interface HaircutInput {
+  date: string; // YYYY-MM-DD
+  clientId?: string | null;
+  clientName: string;
+  serviceName: string; // tipo de corte
+  minutes?: number | null; // cuánto tardó (opcional: se puede cargar después)
+  price?: string | null;
+  appointmentId?: string | null;
+  note?: string | null;
+}
+
+export const isMissingTableError = (e: unknown): boolean =>
+  e instanceof Error && /Could not find the table|42P01|relation .* does not exist/i.test(e.message);
+
+const sanitizeMinutes = (value: number | null | undefined): number | null => {
+  if (value === null || value === undefined) return null;
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n < 1) return null;
+  return Math.min(n, 480);
+};
+
+export const listHaircuts = async (limit = 200): Promise<HaircutRecord[]> => {
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from('haircuts')
+    .select('*, clients(full_name, phone)')
+    .order('date', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []) as HaircutRecord[];
+};
+
+export const createHaircut = async (input: HaircutInput): Promise<HaircutRecord> => {
+  const sb = getSupabase();
+  const clientName = sanitizeText(input.clientName, 80);
+  const serviceName = sanitizeText(input.serviceName, 80);
+  if (!clientName) throw new Error('Escribí el nombre del cliente.');
+  if (!serviceName) throw new Error('Elegí el tipo de corte.');
+  const { data, error } = await sb
+    .from('haircuts')
+    .insert({
+      date: input.date,
+      client_id: input.clientId || null,
+      client_name: clientName,
+      service_name: serviceName,
+      minutes: sanitizeMinutes(input.minutes),
+      price: sanitizeText(input.price || '', 20) || null,
+      appointment_id: input.appointmentId || null,
+      note: sanitizeNote(input.note || '') || null,
+    })
+    .select('*, clients(full_name, phone)')
+    .single();
+  if (error) throw error;
+  return data as HaircutRecord;
+};
+
+export const updateHaircut = async (
+  id: string,
+  updates: { serviceName?: string; minutes?: number | null; price?: string | null; note?: string | null },
+): Promise<void> => {
+  const sb = getSupabase();
+  const row: Record<string, string | number | null> = {};
+  if (updates.serviceName !== undefined) {
+    const name = sanitizeText(updates.serviceName, 80);
+    if (!name) throw new Error('El tipo de corte no puede quedar vacío.');
+    row.service_name = name;
+  }
+  if (updates.minutes !== undefined) row.minutes = sanitizeMinutes(updates.minutes);
+  if (updates.price !== undefined) row.price = sanitizeText(updates.price || '', 20) || null;
+  if (updates.note !== undefined) row.note = sanitizeNote(updates.note || '') || null;
+  const { error } = await sb.from('haircuts').update(row).eq('id', id);
+  if (error) throw error;
+};
+
+export const deleteHaircut = async (id: string): Promise<void> => {
+  const sb = getSupabase();
+  const { error } = await sb.from('haircuts').delete().eq('id', id);
+  if (error) throw error;
+};
+
+export const subscribeHaircutsChanges = (onChange: () => void): (() => void) => {
+  if (!isSupabaseConfigured()) return () => {};
+  const sb = getSupabase();
+  const channel = sb
+    .channel('cortes-cambios')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'haircuts' }, () =>
+      onChange(),
+    )
+    .subscribe();
+  return () => {
+    sb.removeChannel(channel);
+  };
+};
+
+/* ─────────────────────────────────────────────
  * Storage (fotos de referencia)
  * ───────────────────────────────────────────── */
 export const uploadReferenceImage = async (file: File, clientId: string): Promise<string> => {
@@ -540,6 +658,7 @@ export const uploadReferenceImage = async (file: File, clientId: string): Promis
 export interface PublicBusinessData {
   businessName: string;
   phone: string;
+  address: string;
   webhookUrl: string;
   webhookEnabled: boolean;
 }
@@ -552,6 +671,7 @@ export const fetchPublicBusinessData = async (): Promise<PublicBusinessData | nu
   return {
     businessName: data.business_name,
     phone: data.phone,
+    address: (data.address as string) || '',
     webhookUrl: data.webhook_url,
     webhookEnabled: data.webhook_enabled,
   };
@@ -563,6 +683,7 @@ export const savePublicBusinessData = async (data: PublicBusinessData) => {
     id: 1,
     business_name: data.businessName,
     phone: data.phone,
+    address: data.address,
     webhook_url: data.webhookUrl,
     webhook_enabled: data.webhookEnabled,
     updated_at: new Date().toISOString(),
@@ -623,6 +744,15 @@ export const sendBookingWebhook = async (
 
 export const buildWaLink = (phone: string, text: string): string =>
   `https://wa.me/${normalizePhone(phone)}?text=${encodeURIComponent(text)}`;
+
+/** Link de GPS (Google Maps) para que el cliente llegue a la barbería. */
+export const buildMapsLink = (address: string, fallbackName: string): string => {
+  const trimmed = address.trim();
+  // Si es un link directo de Google Maps (ej: https://maps.app.goo.gl/...) se usa tal cual
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  const query = trimmed || fallbackName.trim();
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+};
 
 /* ─────────────────────────────────────────────
  * Migración desde localStorage (una sola vez)

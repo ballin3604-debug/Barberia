@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { BusinessSettings } from '../types';
 import { getTodayDateString } from '../data/defaultData';
 import { buildRulesText } from '../lib/api';
+import { hashPin, verifyPin } from '../lib/pin';
 import { Modal } from './Modal';
 import { useToast } from './Toast';
 import { Copy, Download, Lock, MessageCircle, Save, Store, Upload, Zap } from 'lucide-react';
@@ -28,34 +29,89 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const showToast = useToast();
   const [businessName, setBusinessName] = useState('');
   const [phone, setPhone] = useState('');
+  const [address, setAddress] = useState('');
   const [webhookUrl, setWebhookUrl] = useState('');
   const [webhookEnabled, setWebhookEnabled] = useState(false);
   const [pin, setPin] = useState('');
+  const [currentPin, setCurrentPin] = useState('');
+  const [removePin, setRemovePin] = useState(false);
+  const [savingPin, setSavingPin] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
     if (isOpen) {
       setBusinessName(settings.businessName);
       setPhone(settings.phone);
+      setAddress(settings.address || '');
       setWebhookUrl(settings.webhookUrl);
       setWebhookEnabled(settings.webhookEnabled);
-      setPin(settings.pin || '');
+      setPin('');
+      setCurrentPin('');
+      setRemovePin(false);
+      setSavingPin(false);
       setError('');
     }
   }, [isOpen, settings]);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!businessName.trim()) {
       setError('Ingresá el nombre de la barbería.');
       return;
+    }
+    // ── PIN: se guarda hasheado; para cambiarlo o quitarlo hay que saber el actual ──
+    const storedPin = settings.pin || '';
+    let pinToSave = storedPin;
+    if (storedPin) {
+      if (removePin) {
+        if (!currentPin) {
+          setError('Para quitar el PIN ingresá el PIN actual.');
+          return;
+        }
+        if (!(await verifyPin(currentPin, storedPin))) {
+          setError('El PIN actual no coincide.');
+          return;
+        }
+        pinToSave = '';
+      } else if (pin.trim()) {
+        if (!/^\d{4,6}$/.test(pin.trim())) {
+          setError('El nuevo PIN debe tener de 4 a 6 dígitos.');
+          return;
+        }
+        if (!currentPin) {
+          setError('Para cambiar el PIN ingresá el PIN actual.');
+          return;
+        }
+        if (!(await verifyPin(currentPin, storedPin))) {
+          setError('El PIN actual no coincide.');
+          return;
+        }
+        setSavingPin(true);
+        try {
+          pinToSave = await hashPin(pin.trim());
+        } finally {
+          setSavingPin(false);
+        }
+      }
+    } else if (pin.trim()) {
+      if (!/^\d{4,6}$/.test(pin.trim())) {
+        setError('El PIN debe tener de 4 a 6 dígitos.');
+        return;
+      }
+      setSavingPin(true);
+      try {
+        pinToSave = await hashPin(pin.trim());
+      } finally {
+        setSavingPin(false);
+      }
     }
     onSave({
       ...settings,
       businessName: businessName.trim(),
       phone: phone.trim(),
+      address: address.trim(),
       webhookUrl: webhookUrl.trim(),
       webhookEnabled,
-      pin: pin.trim(),
+      pin: pinToSave,
     });
     onClose();
   };
@@ -110,7 +166,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               type="text"
               value={businessName}
               onChange={(e) => setBusinessName(e.target.value)}
-              placeholder="Ej. Barbería El Maestro"
+              placeholder="Ej. THE BEST BARBERSHOP"
               className="w-full px-3 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500"
             />
           </div>
@@ -130,6 +186,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             />
             <p className="text-[10px] text-gray-400 mt-1">
               El cliente usa este número para reservar y vos recibís el aviso de cada cita.
+            </p>
+          </div>
+          <div>
+            <label className="block text-xs font-bold uppercase tracking-wider text-gray-700 mb-1.5">
+              Dirección de la barbería{' '}
+              <span className="text-gray-400 font-normal lowercase">
+                (para el botón de GPS del cliente)
+              </span>
+            </label>
+            <input
+              type="text"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              placeholder="Ej: Av. Siempre Viva 123, o pegá el link de Google Maps"
+              className="w-full px-3 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+            />
+            <p className="text-[10px] text-gray-400 mt-1">
+              Podés escribir la dirección o pegar el link de tu ubicación (como los de
+              maps.app.goo.gl). El cliente lo abre con el botón de GPS.
             </p>
           </div>
         </section>
@@ -205,23 +280,55 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <h3 className="text-xs font-bold uppercase tracking-widest text-gray-500 flex items-center gap-1.5">
             <Lock className="w-3.5 h-3.5" /> Protección de la vista del barbero (opcional)
           </h3>
+          <p className="text-[11px] text-gray-500">
+            Estado:{' '}
+            <span className="font-bold text-gray-700">
+              {settings.pin ? 'PIN configurado' : 'Sin PIN (acceso libre)'}
+            </span>
+          </p>
+          {settings.pin && (
+            <div>
+              <label className="block text-xs font-bold uppercase tracking-wider text-gray-700 mb-1.5">
+                PIN actual
+              </label>
+              <input
+                type="password"
+                inputMode="numeric"
+                value={currentPin}
+                onChange={(e) => setCurrentPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                placeholder="Necesario para cambiar o quitar"
+                className="w-full px-3 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-mono"
+              />
+            </div>
+          )}
           <div>
             <label className="block text-xs font-bold uppercase tracking-wider text-gray-700 mb-1.5">
-              PIN de 4 a 6 dígitos
+              {settings.pin ? 'Nuevo PIN de 4 a 6 dígitos' : 'PIN de 4 a 6 dígitos'}
             </label>
             <input
               type="password"
               inputMode="numeric"
               value={pin}
               onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
-              placeholder="Sin PIN = acceso libre"
+              placeholder={settings.pin ? 'Vacío = no cambiar' : 'Sin PIN = acceso libre'}
               className="w-full px-3 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-mono"
             />
             <p className="text-[10px] text-gray-400 mt-1">
-              Si lo configurás, se pedirá al abrir la agenda en este navegador. El link de
-              clientes NO pide PIN.
+              Se guarda cifrado (hash) y tras 5 intentos fallidos se bloquea 3 minutos. El link
+              de clientes NO pide PIN.
             </p>
           </div>
+          {settings.pin && (
+            <label className="flex items-center gap-2 text-xs font-semibold text-gray-600 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={removePin}
+                onChange={(e) => setRemovePin(e.target.checked)}
+                className="w-4 h-4 accent-red-600"
+              />
+              Quitar el PIN (pide el PIN actual al guardar)
+            </label>
+          )}
         </section>
 
         {/* ── Respaldo ── */}
@@ -287,14 +394,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         >
           Cancelar
         </button>
-        <button
-          type="button"
-          onClick={handleSave}
-          className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
-        >
-          <Save className="w-4 h-4" />
-          Guardar
-        </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={savingPin}
+            className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+          >
+            <Save className="w-4 h-4" />
+            {savingPin ? 'Guardando…' : 'Guardar'}
+          </button>
       </div>
     </Modal>
   );
