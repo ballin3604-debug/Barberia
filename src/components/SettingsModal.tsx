@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { BusinessSettings } from '../types';
 import { getTodayDateString } from '../data/defaultData';
-import { buildRulesText } from '../lib/api';
+import { buildMapsLink, buildRulesText } from '../lib/api';
 import { hashPin, verifyPin } from '../lib/pin';
 import { Modal } from './Modal';
 import { useToast } from './Toast';
-import { Copy, Download, Lock, MessageCircle, Save, Store, Upload, Zap } from 'lucide-react';
+import { Copy, Download, Lock, MapPin, MessageCircle, Save, Store, Upload, Zap } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -30,8 +30,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [businessName, setBusinessName] = useState('');
   const [phone, setPhone] = useState('');
   const [address, setAddress] = useState('');
-  const [webhookUrl, setWebhookUrl] = useState('');
-  const [webhookEnabled, setWebhookEnabled] = useState(false);
   const [pin, setPin] = useState('');
   const [currentPin, setCurrentPin] = useState('');
   const [removePin, setRemovePin] = useState(false);
@@ -43,8 +41,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setBusinessName(settings.businessName);
       setPhone(settings.phone);
       setAddress(settings.address || '');
-      setWebhookUrl(settings.webhookUrl);
-      setWebhookEnabled(settings.webhookEnabled);
       setPin('');
       setCurrentPin('');
       setRemovePin(false);
@@ -109,8 +105,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       businessName: businessName.trim(),
       phone: phone.trim(),
       address: address.trim(),
-      webhookUrl: webhookUrl.trim(),
-      webhookEnabled,
       pin: pinToSave,
     });
     onClose();
@@ -206,50 +200,39 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               Podés escribir la dirección o pegar el link de tu ubicación (como los de
               maps.app.goo.gl). El cliente lo abre con el botón de GPS.
             </p>
-          </div>
-        </section>
-
-        {/* ── Notificaciones WhatsApp ── */}
-        <section className="space-y-3">
-          <h3 className="text-xs font-bold uppercase tracking-widest text-gray-500 flex items-center gap-1.5">
-            <MessageCircle className="w-3.5 h-3.5" /> Notificaciones por WhatsApp (Pabbly)
-          </h3>
-          <div className="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2.5">
-            <span className="text-xs font-bold text-gray-700">
-              Enviar aviso automático de cada cita
-            </span>
-            <button
-              type="button"
-              onClick={() => setWebhookEnabled(!webhookEnabled)}
-              className={`relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors cursor-pointer ${
-                webhookEnabled ? 'bg-emerald-500' : 'bg-gray-300'
-              }`}
-              role="switch"
-              aria-checked={webhookEnabled}
-              aria-label="Activar notificaciones automáticas"
-            >
-              <span
-                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition duration-200 ease-in-out ${
-                  webhookEnabled ? 'translate-x-5' : 'translate-x-0'
-                }`}
-              />
-            </button>
-          </div>
-          <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-gray-700 mb-1.5">
-              URL del webhook (Pabbly Connect)
-            </label>
-            <input
-              type="url"
-              value={webhookUrl}
-              onChange={(e) => setWebhookUrl(e.target.value)}
-              placeholder="https://connect.pabbly.com/workflow/sendwebhookdata/..."
-              className="w-full px-3 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-mono text-xs"
-            />
-            <p className="text-[10px] text-gray-400 mt-1">
-              Se envía un POST con la cita (cliente, fecha, hora y referencia) al workflow de
-              Pabbly. Si queda apagado, se abre WhatsApp con el mensaje listo.
-            </p>
+            {address.trim() && (
+              <div className="mt-2 space-y-2">
+                {/^https?:\/\//i.test(address.trim()) ? (
+                  <a
+                    href={address.trim()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-2 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 text-xs font-bold rounded-xl transition-colors cursor-pointer"
+                  >
+                    <MapPin className="w-3.5 h-3.5" />
+                    Probar ubicación en Google Maps
+                  </a>
+                ) : (
+                  <>
+                    <iframe
+                      title="Vista previa de la ubicación"
+                      src={`https://www.google.com/maps?q=${encodeURIComponent(address.trim())}&output=embed`}
+                      className="w-full h-48 rounded-xl border border-gray-200"
+                      loading="lazy"
+                    />
+                    <a
+                      href={buildMapsLink(address, businessName.trim() || 'barbería')}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-2 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 text-xs font-bold rounded-xl transition-colors cursor-pointer"
+                    >
+                      <MapPin className="w-3.5 h-3.5" />
+                      Abrir en Google Maps
+                    </a>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </section>
 

@@ -197,7 +197,7 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [selectedDate, refreshKey]);
+  }, [selectedDate, refreshKey, today]);
 
   useEffect(() => {
     return () => {
