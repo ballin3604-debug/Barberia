@@ -64,9 +64,22 @@ export const ensureDaySlots = async (date: string): Promise<SlotRecord[]> => {
 
   let slots = (data ?? []) as SlotRecord[];
   if (slots.length === 0) {
+    // No crear horarios para días pasados (evita filas basura en la DB)
+    if (date < getTodayDateString()) return [];
     const rows = STANDARD_HOURS.map((time) => ({ date, time, is_available: true }));
     const { data: inserted, error } = await sb.from('slots').insert(rows).select('*');
-    if (error) throw error;
+    if (error) {
+      // Carrera: otro dispositivo creó los slots al mismo tiempo → releer
+      if (error.code === '23505') {
+        const { data: retry } = await sb
+          .from('slots')
+          .select('*')
+          .eq('date', date)
+          .order('time', { ascending: true });
+        return ((retry ?? []) as SlotRecord[]);
+      }
+      throw error;
+    }
     slots = (inserted ?? []) as SlotRecord[];
   }
   return slots;
@@ -122,6 +135,10 @@ export const getOpenDays = async (from: string, to: string): Promise<Record<stri
 };
 
 export const setDayOpen = async (date: string, isOpen: boolean) => {
+  // Bloqueo de seguridad: nunca abrir días pasados (hoy = 2026-09-09, ej: 09-08 ya no se abre)
+  if (isOpen && date < getTodayDateString()) {
+    throw new Error('No se pueden abrir días pasados.');
+  }
   const sb = getSupabase();
   const { error } = await sb
     .from('day_config')
@@ -250,11 +267,22 @@ export const searchClients = async (query: string): Promise<ClientRecord[]> => {
       .limit(50);
     return (data ?? []) as ClientRecord[];
   }
-  const { data } = await sb
-    .from('clients')
-    .select('*')
-    .or(`full_name.ilike.%${q}%,phone.ilike.%${normalizePhone(q)}%`)
-    .limit(50);
+  // Sanea para el parser OR de PostgREST: coma/paréntesis rompen la query.
+  // % _ \ se escapan para el LIKE.
+  const safeName = q
+    .replace(/[,()]/g, ' ')
+    .replace(/[\\%_]/g, (m) => `\\${m}`)
+    .trim();
+  const digits = normalizePhone(q);
+  const filters: string[] = [];
+  if (safeName) filters.push(`full_name.ilike.%${safeName}%`);
+  if (digits) {
+    const safeDigits = digits.replace(/[\\%_]/g, (m) => `\\${m}`);
+    filters.push(`phone.ilike.%${safeDigits}%`);
+  }
+  if (filters.length === 0) return [];
+  const { data, error } = await sb.from('clients').select('*').or(filters.join(',')).limit(50);
+  if (error) throw error;
   return (data ?? []) as ClientRecord[];
 };
 
@@ -371,10 +399,15 @@ export interface BookingInput {
   referenceUrl?: string | null;
   referenceImageUrl?: string | null;
   note?: string | null;
+  isAnonymous?: boolean; // ocultar el nombre a otros clientes (el barbero lo ve igual)
 }
 
 export const createBooking = async (input: BookingInput): Promise<AppointmentRecord> => {
   const sb = getSupabase();
+  // Bloqueo de seguridad: no se puede reservar en días pasados
+  if (input.date < getTodayDateString()) {
+    throw new Error('No se pueden hacer citas en días pasados.');
+  }
   const referenceUrl = sanitizeReferenceUrl(input.referenceUrl || '');
   const note = sanitizeNote(input.note || '');
 
@@ -387,6 +420,7 @@ export const createBooking = async (input: BookingInput): Promise<AppointmentRec
       p_reference_url: referenceUrl || null,
       p_reference_image_url: input.referenceImageUrl || null,
       p_note: note || null,
+      p_is_anonymous: input.isAnonymous || false,
     });
     if (error) {
       if (/SLOT_TAKEN/.test(error.message)) {
@@ -427,6 +461,7 @@ export const createBooking = async (input: BookingInput): Promise<AppointmentRec
       reference_url: referenceUrl,
       reference_image_url: input.referenceImageUrl || null,
       note: note || null,
+      is_anonymous: input.isAnonymous || false,
     })
     .select('*, clients(full_name, phone, last_visit)')
     .single();
@@ -455,9 +490,16 @@ export const createBooking = async (input: BookingInput): Promise<AppointmentRec
 /** Edita una reserva existente (cambiar horario, referencia o notas). */
 export const updateBooking = async (
   id: string,
-  input: Pick<BookingInput, 'date' | 'time' | 'referenceUrl' | 'referenceImageUrl' | 'note'>,
+  input: Pick<
+    BookingInput,
+    'date' | 'time' | 'referenceUrl' | 'referenceImageUrl' | 'note' | 'isAnonymous'
+  >,
 ): Promise<AppointmentRecord> => {
   const sb = getSupabase();
+  // Bloqueo de seguridad: no se puede mover una cita a un día pasado
+  if (input.date < getTodayDateString()) {
+    throw new Error('No se pueden hacer citas en días pasados.');
+  }
   const referenceUrl = sanitizeReferenceUrl(input.referenceUrl || '');
 
   // ── Camino atómico: función SQL con bloqueo ──
@@ -479,6 +521,14 @@ export const updateBooking = async (
       }
       if (!/does not exist|42883|PGRST202/i.test(error.message)) throw error;
     } else if (data) {
+      // move_appointment no toca el anonimato: se aplica por separado
+      if (input.isAnonymous !== undefined) {
+        const { error: anonError } = await sb
+          .from('appointments')
+          .update({ is_anonymous: input.isAnonymous })
+          .eq('id', data as string);
+        if (anonError) throw anonError;
+      }
       const { data: row } = await sb
         .from('appointments')
         .select('*, clients(full_name, phone, last_visit)')
@@ -513,6 +563,7 @@ export const updateBooking = async (
       reference_url: referenceUrl,
       reference_image_url: input.referenceImageUrl || null,
       note: sanitizeNote(input.note || '') || null,
+      ...(input.isAnonymous !== undefined ? { is_anonymous: input.isAnonymous } : {}),
     })
     .eq('id', id)
     .select('*, clients(full_name, phone, last_visit)')
@@ -542,17 +593,18 @@ export const isSlotTaken = (appointments: AppointmentRecord[], time: string): bo
   appointments.some((a) => a.time === time && a.status !== 'cancelled');
 
 /* ─────────────────────────────────────────────
- * Historial de cortes realizados
+ * Historial de personas atendidas
  * ───────────────────────────────────────────── */
 export interface HaircutInput {
   date: string; // YYYY-MM-DD
+  time?: string | null; // horario de la cita 'HH:MM'
   clientId?: string | null;
   clientName: string;
-  serviceName: string; // tipo de corte
-  minutes?: number | null; // cuánto tardó (opcional: se puede cargar después)
+  serviceName?: string | null; // corte realizado (el barbero lo completa después)
+  minutes?: number | null; // tiempo que tardó (opcional: se carga después)
   price?: string | null;
   appointmentId?: string | null;
-  note?: string | null;
+  note?: string | null; // observaciones
 }
 
 export const isMissingTableError = (e: unknown): boolean =>
@@ -563,6 +615,11 @@ const sanitizeMinutes = (value: number | null | undefined): number | null => {
   const n = Math.floor(Number(value));
   if (!Number.isFinite(n) || n < 1) return null;
   return Math.min(n, 480);
+};
+
+const sanitizeTime = (value: string | null | undefined): string | null => {
+  const t = (value || '').trim().slice(0, 5);
+  return /^\d{2}:\d{2}$/.test(t) ? t : null;
 };
 
 export const listHaircuts = async (limit = 200): Promise<HaircutRecord[]> => {
@@ -580,13 +637,13 @@ export const listHaircuts = async (limit = 200): Promise<HaircutRecord[]> => {
 export const createHaircut = async (input: HaircutInput): Promise<HaircutRecord> => {
   const sb = getSupabase();
   const clientName = sanitizeText(input.clientName, 80);
-  const serviceName = sanitizeText(input.serviceName, 80);
+  const serviceName = sanitizeText(input.serviceName || '', 80) || null;
   if (!clientName) throw new Error('Escribí el nombre del cliente.');
-  if (!serviceName) throw new Error('Elegí el tipo de corte.');
   const { data, error } = await sb
     .from('haircuts')
     .insert({
       date: input.date,
+      time: sanitizeTime(input.time),
       client_id: input.clientId || null,
       client_name: clientName,
       service_name: serviceName,
@@ -601,20 +658,54 @@ export const createHaircut = async (input: HaircutInput): Promise<HaircutRecord>
   return data as HaircutRecord;
 };
 
+/** Crea la ficha de la persona atendida desde su turno (una sola vez por turno). */
+export const createHaircutFromAppointment = async (appt: {
+  id: string;
+  date: string;
+  time: string;
+  client_id: string;
+  clientName: string;
+}): Promise<HaircutRecord | null> => {
+  const sb = getSupabase();
+  const { data: existing } = await sb
+    .from('haircuts')
+    .select('id')
+    .eq('appointment_id', appt.id)
+    .maybeSingle();
+  if (existing) return null;
+  return createHaircut({
+    date: appt.date,
+    time: appt.time,
+    clientId: appt.client_id,
+    clientName: appt.clientName,
+    serviceName: null,
+    minutes: null,
+    price: null,
+    appointmentId: appt.id,
+  });
+};
+
 export const updateHaircut = async (
   id: string,
-  updates: { serviceName?: string; minutes?: number | null; price?: string | null; note?: string | null },
+  updates: {
+    serviceName?: string;
+    minutes?: number | null;
+    price?: string | null;
+    note?: string | null;
+    time?: string | null;
+  },
 ): Promise<void> => {
   const sb = getSupabase();
   const row: Record<string, string | number | null> = {};
   if (updates.serviceName !== undefined) {
     const name = sanitizeText(updates.serviceName, 80);
-    if (!name) throw new Error('El tipo de corte no puede quedar vacío.');
+    if (!name) throw new Error('El corte realizado no puede quedar vacío.');
     row.service_name = name;
   }
   if (updates.minutes !== undefined) row.minutes = sanitizeMinutes(updates.minutes);
   if (updates.price !== undefined) row.price = sanitizeText(updates.price || '', 20) || null;
   if (updates.note !== undefined) row.note = sanitizeNote(updates.note || '') || null;
+  if (updates.time !== undefined) row.time = sanitizeTime(updates.time);
   const { error } = await sb.from('haircuts').update(row).eq('id', id);
   if (error) throw error;
 };

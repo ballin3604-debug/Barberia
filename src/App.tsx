@@ -16,7 +16,6 @@ import { isSupabaseConfigured } from './lib/supabase';
 import { ClientBookingView } from './components/client/ClientBookingView';
 import { BarberAgendaView } from './components/barber/BarberAgendaView';
 import { SettingsModal } from './components/SettingsModal';
-import { ReportsModal } from './components/ReportsModal';
 import { useToast } from './components/Toast';
 import { Database, Upload } from 'lucide-react';
 
@@ -28,11 +27,19 @@ export default function App() {
   const showToast = useToast();
   const params = new URLSearchParams(window.location.search);
   const isClientView = params.get('view') === 'client';
-  const initialDate = params.get('date') || undefined;
+  const rawDate = params.get('date') || '';
+  // Sanea ?date= : solo YYYY-MM-DD con mes/día reales, si no se ignora
+  const initialDate = (() => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) return undefined;
+    const [y, m, d] = rawDate.split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d
+      ? rawDate
+      : undefined;
+  })();
 
   const [settings, setSettings] = useState<BusinessSettings>(loadSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [reportsOpen, setReportsOpen] = useState(false);
   const [pinOk, setPinOk] = useState(() => sessionStorage.getItem('barber_pin_ok') === '1');
 
   const [showMigrate, setShowMigrate] = useState<boolean>(() => {
@@ -191,7 +198,6 @@ export default function App() {
         businessName={settings.businessName}
         services={settings.services}
         onOpenSettings={() => setSettingsOpen(true)}
-        onOpenReports={() => setReportsOpen(true)}
       />
 
       {/* Banner: Supabase sin configurar */}
@@ -265,7 +271,6 @@ export default function App() {
         onExport={handleExport}
         onImport={handleImport}
       />
-      <ReportsModal isOpen={reportsOpen} onClose={() => setReportsOpen(false)} />
     </>
   );
 }

@@ -44,6 +44,7 @@ export interface AppointmentRecord {
   reference_url: string | null;
   reference_image_url: string | null;
   note: string | null;
+  is_anonymous: boolean; // el cliente oculta su nombre a otros clientes
   created_at: string;
   // join con clients
   clients?: Pick<ClientRecord, 'id' | 'full_name' | 'phone' | 'last_visit'> | null;
@@ -61,17 +62,18 @@ export interface DayConfigRecord {
   is_open: boolean;
 }
 
-/* ── Historial de cortes realizados ─────────────────── */
+/* ── Historial de personas atendidas ─────────────── */
 export interface HaircutRecord {
   id: string;
-  date: string; // YYYY-MM-DD (día en que se hizo el corte)
+  date: string; // YYYY-MM-DD (día en que se atendió)
+  time: string | null; // horario de la cita 'HH:MM'
   client_id: string | null;
   client_name: string;
-  service_name: string; // tipo de corte
-  minutes: number | null; // cuánto tardó (el barbero lo puede cargar después)
+  service_name: string | null; // corte realizado (lo completa el barbero)
+  minutes: number | null; // tiempo que tardó (lo completa el barbero)
   price: string | null;
   appointment_id: string | null;
-  note: string | null;
+  note: string | null; // observaciones
   created_at: string;
   // join con clients
   clients?: Pick<ClientRecord, 'id' | 'full_name' | 'phone'> | null;

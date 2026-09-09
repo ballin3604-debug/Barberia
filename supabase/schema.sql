@@ -39,6 +39,7 @@ create table if not exists public.appointments (
   reference_image_url text,            -- foto subida a Storage
   note text,
   reminded_at timestamptz,             -- recordatorio por correo enviado
+  is_anonymous boolean not null default false, -- el cliente oculta su nombre a otros clientes
   created_at timestamptz not null default now()
 );
 
@@ -70,6 +71,10 @@ create unique index if not exists one_active_booking_per_client
   on public.appointments (client_id)
   where status <> 'cancelled';
 
+-- Migración: anonimato (bases que ya tenían la tabla appointments)
+alter table public.appointments
+  add column if not exists is_anonymous boolean not null default false;
+
 -- ═══════════════════════════════════════════════════════════════
 --  OPERACIONES ATÓMICAS (evita carreras entre dispositivos)
 --  Reservar y mover turnos en UNA transacción con bloqueo:
@@ -82,7 +87,8 @@ create or replace function public.create_appointment(
   p_time text,
   p_reference_url text default null,
   p_reference_image_url text default null,
-  p_note text default null
+  p_note text default null,
+  p_is_anonymous boolean default false
 ) returns uuid
 language plpgsql
 security definer
@@ -108,9 +114,9 @@ begin
   end if;
 
   insert into public.appointments
-    (client_id, date, time, status, reference_url, reference_image_url, note)
+    (client_id, date, time, status, reference_url, reference_image_url, note, is_anonymous)
   values
-    (p_client_id, p_date, p_time, 'confirmed', p_reference_url, p_reference_image_url, p_note)
+    (p_client_id, p_date, p_time, 'confirmed', p_reference_url, p_reference_image_url, p_note, p_is_anonymous)
   returning id into v_id;
 
   if p_date <= current_date then
@@ -266,22 +272,28 @@ drop policy if exists "public upload references" on storage.objects;
 create policy "public upload references" on storage.objects
   for insert with check (bucket_id = 'references');
 
--- ── 9. HISTORIAL DE CORTES REALIZADOS ──────────────────
---  Tabla tipo base de datos para que el barbero vea qué cortes
---  se hicieron: fecha, cliente, tipo de corte y minutos que tardó
---  (los minutos se pueden cargar al registrar o después).
+-- ── 9. HISTORIAL DE PERSONAS ATENDIDAS ─────────────
+--  Tabla tipo base de datos: fecha, horario, persona, teléfono,
+--  corte realizado, tiempo que tardó, precio y observaciones.
+--  La ficha se crea sola al marcar el turno como atendido y el
+--  barbero completa corte/tiempo/nota después.
 create table if not exists public.haircuts (
   id uuid primary key default gen_random_uuid(),
-  date date not null,                      -- día en que se hizo el corte
+  date date not null,                      -- día en que se atendió
+  time text,                               -- horario de la cita 'HH:MM'
   client_id uuid references public.clients (id) on delete set null,
   client_name text not null,               -- nombre (también para clientes sin ficha)
-  service_name text not null,              -- tipo de corte
+  service_name text,                       -- corte realizado (lo completa el barbero)
   minutes integer check (minutes is null or (minutes >= 1 and minutes <= 480)),
   price text,                              -- ej: '$10.00' (opcional)
   appointment_id uuid references public.appointments (id) on delete set null,
-  note text,
+  note text,                               -- observaciones
   created_at timestamptz not null default now()
 );
+
+-- Migración para bases que ya tenían la tabla anterior
+alter table public.haircuts add column if not exists time text;
+alter table public.haircuts alter column service_name drop not null;
 
 create index if not exists haircuts_date_idx on public.haircuts (date desc);
 create index if not exists haircuts_client_idx on public.haircuts (client_id);

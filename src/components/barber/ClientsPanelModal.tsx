@@ -12,23 +12,30 @@ interface ClientsPanelModalProps {
 
 export const ClientsPanelModal: React.FC<ClientsPanelModalProps> = ({ isOpen, onClose }) => {
   const [query, setQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [clients, setClients] = useState<ClientRecord[]>([]);
   const [selected, setSelected] = useState<ClientRecord | null>(null);
   const [history, setHistory] = useState<AppointmentRecord[]>([]);
   const [loading, setLoading] = useState(false);
 
+  // Debounce: evita un request a Supabase por cada tecla
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebouncedQuery(query), 300);
+    return () => window.clearTimeout(id);
+  }, [query]);
+
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
     setLoading(true);
-    searchClients(query)
+    searchClients(debouncedQuery)
       .then((rows) => !cancelled && setClients(rows))
       .catch(() => !cancelled && setClients([]))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [isOpen, query]);
+  }, [isOpen, debouncedQuery]);
 
   useEffect(() => {
     if (!selected) return;

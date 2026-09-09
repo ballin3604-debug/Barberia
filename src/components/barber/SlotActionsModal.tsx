@@ -3,11 +3,12 @@ import { AppointmentRecord } from '../../types';
 import {
   buildWaLink,
   createBooking,
+  createHaircutFromAppointment,
   getOrCreateClient,
   setAppointmentState,
   setSlotAvailability,
 } from '../../lib/api';
-import { formatDateDisplay } from '../../data/defaultData';
+import { formatDateDisplay, getTodayDateString } from '../../data/defaultData';
 import { Modal } from '../Modal';
 import { useToast } from '../Toast';
 import { CheckCircle2, Clock, Link2, MessageCircle, User, X } from 'lucide-react';
@@ -35,6 +36,7 @@ export const SlotActionsModal: React.FC<SlotActionsModalProps> = ({
   const [clientName, setClientName] = useState('');
   const [clientPhone, setClientPhone] = useState('');
   const [confirmFree, setConfirmFree] = useState(false);
+  const [confirmVisibility, setConfirmVisibility] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -42,6 +44,7 @@ export const SlotActionsModal: React.FC<SlotActionsModalProps> = ({
       setClientName('');
       setClientPhone('');
       setConfirmFree(false);
+      setConfirmVisibility(false);
       setBusy(false);
     }
   }, [isOpen, time]);
@@ -55,6 +58,10 @@ export const SlotActionsModal: React.FC<SlotActionsModalProps> = ({
   const handleQuickBook = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!clientName.trim()) return;
+    if (date < getTodayDateString()) {
+      showToast('No se pueden agendar citas en días pasados', 'error');
+      return;
+    }
     setBusy(true);
     try {
       const { client } = await getOrCreateClient(clientName, clientPhone);
@@ -106,6 +113,11 @@ export const SlotActionsModal: React.FC<SlotActionsModalProps> = ({
               <p className="text-sm font-bold text-gray-900 truncate">
                 {client?.full_name || 'Cliente'}
               </p>
+              {appointment.is_anonymous && (
+                <span className="inline-block mt-0.5 text-[10px] font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded-full">
+                  Anónimo para los clientes
+                </span>
+              )}
               <p className="text-xs text-gray-500">
                 {formatDateDisplay(date)} · <Clock className="inline w-3 h-3" /> {time} h
               </p>
@@ -168,6 +180,18 @@ export const SlotActionsModal: React.FC<SlotActionsModalProps> = ({
                   setBusy(true);
                   try {
                     await setAppointmentState(appointment.id, 'attended');
+                    // Crea la ficha en Personas atendidas (si la tabla existe y no hay ficha aún)
+                    try {
+                      await createHaircutFromAppointment({
+                        id: appointment.id,
+                        date,
+                        time: appointment.time,
+                        client_id: appointment.client_id,
+                        clientName: client?.full_name || 'Cliente',
+                      });
+                    } catch {
+                      // la tabla haircuts aún no existe: no bloquea el atendido
+                    }
                     showToast('Cita marcada como atendida');
                     onChanged();
                     onClose();
@@ -293,7 +317,7 @@ export const SlotActionsModal: React.FC<SlotActionsModalProps> = ({
         <div className="pt-2 border-t border-gray-100 flex flex-wrap items-center justify-between gap-2">
           <button
             type="button"
-            onClick={handleToggleVisibility}
+            onClick={() => setConfirmVisibility(true)}
             disabled={busy}
             className={`px-3.5 py-2 text-xs font-bold rounded-lg transition-colors cursor-pointer disabled:opacity-50 ${
               slotAvailable
@@ -311,6 +335,47 @@ export const SlotActionsModal: React.FC<SlotActionsModalProps> = ({
             Cerrar
           </button>
         </div>
+
+        <Modal
+          isOpen={confirmVisibility}
+          onClose={() => setConfirmVisibility(false)}
+          title={slotAvailable ? '¿Ocultar esta hora?' : '¿Habilitar esta hora?'}
+          maxWidth="max-w-sm"
+          headerClassName="bg-gray-50/60"
+        >
+          <div className="p-5 space-y-4">
+            <p className="text-xs text-gray-600">
+              <span className="font-bold text-gray-900">
+                {formatDateDisplay(date)} · {time} h
+              </span>
+              {slotAvailable
+                ? ' se ocultará y los clientes dejarán de verla para reservar.'
+                : ' se habilitará y los clientes podrán reservarla.'}
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmVisibility(false)}
+                className="px-4 py-2 text-xs font-semibold text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer"
+              >
+                Volver
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmVisibility(false);
+                  handleToggleVisibility();
+                }}
+                disabled={busy}
+                className={`px-4 py-2 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer disabled:opacity-50 ${
+                  slotAvailable ? 'bg-red-600 hover:bg-red-700' : 'bg-emerald-600 hover:bg-emerald-700'
+                }`}
+              >
+                {slotAvailable ? 'Sí, ocultar' : 'Sí, habilitar'}
+              </button>
+            </div>
+          </div>
+        </Modal>
       </div>
     </Modal>
   );

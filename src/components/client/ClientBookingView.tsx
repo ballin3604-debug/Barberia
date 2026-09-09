@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppointmentRecord } from '../../types';
 import {
   buildConfirmationText,
@@ -27,12 +27,15 @@ import {
   uploadReferenceImage,
 } from '../../lib/api';
 import { subscribeClientToPush, PushResult } from '../../lib/push';
+import { ClientTutorial } from './ClientTutorial';
+import { hasSeenClientTutorial, markClientTutorialSeen } from '../../lib/tutorial';
 import { getTodayDateString, getUpcomingDays, formatDateDisplay } from '../../data/defaultData';
 import {
   ArrowLeft,
   CalendarDays,
   CheckCircle2,
   Clock,
+  EyeOff,
   ImagePlus,
   Link2,
   Mail,
@@ -55,6 +58,24 @@ type Step = 'agenda' | 'identify' | 'confirmMove' | 'reference' | 'manage' | 'do
 
 const ACCEPTED_IMAGES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/heic'];
 
+/** Fecha válida YYYY-MM-DD con mes/día reales (evita ?date=2020-13-99). */
+const isValidDateStr = (s: string): boolean => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const [y, m, d] = s.split('-').map(Number);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+  const dt = new Date(y, m - 1, d);
+  return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d;
+};
+
+/* Mensajes para desmotivar la cancelación (con humor) */
+const CANCEL_DETERRENTS = [
+  '¿Seguro? Tu barbero ya estaba afilando las tijeras solo para vos…',
+  'Piénsalo dos veces: ese horario es oro y otro lo está mirando con ganas.',
+  'Tu corte te va a extrañar. ¿Lo dejamos plantado así nomás?',
+  'Cancelar es gratis, pero arrepentirse frente al espejo no tiene precio.',
+  '¿En serio? El sillón ya se estaba poniendo cómodo para vos.',
+];
+
 export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
   businessName,
   barberPhone,
@@ -75,10 +96,17 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
   const [recentBookings, setRecentBookings] = useState<AppointmentRecord[]>([]);
   const [isEditing, setIsEditing] = useState(false);
   const [openDays, setOpenDays] = useState<Record<string, boolean>>({});
-  const [selectedDate, setSelectedDate] = useState(initialDate || '');
+  const [selectedDate, setSelectedDate] = useState(
+    initialDate && isValidDateStr(initialDate) ? initialDate : '',
+  );
   const [slots, setSlots] = useState<{ time: string; is_available: boolean }[]>([]);
-  const [appointments, setAppointments] = useState<{ time: string; name: string }[]>([]);
+  const [appointments, setAppointments] = useState<
+    { time: string; name: string; isAnonymous: boolean }[]
+  >([]);
   const [pendingTime, setPendingTime] = useState<string | null>(null);
+  const [isAnonymous, setIsAnonymous] = useState(false);
+  const [cancelArmed, setCancelArmed] = useState(false);
+  const [deterrent, setDeterrent] = useState(CANCEL_DETERRENTS[0]);
   const [refreshKey, setRefreshKey] = useState(0);
   const [referenceUrl, setReferenceUrl] = useState('');
   const [note, setNote] = useState('');
@@ -89,17 +117,47 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
   const [info, setInfo] = useState('');
   const [doneBooking, setDoneBooking] = useState<{ date: string; time: string } | null>(null);
   const [pushStatus, setPushStatus] = useState<PushResult | null>(null);
+  const [tutorialOpen, setTutorialOpen] = useState(() => !hasSeenClientTutorial());
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const upcomingDays = useMemo(() => getUpcomingDays(14), []);
   const rulesText = useMemo(() => buildRulesText(businessName), [businessName]);
 
-  // Días habilitados por el barbero (solo abiertos explícitamente)
+  // Días habilitados por el barbero (solo abiertos explícitamente).
+  // Se recarga al instante cuando el barbero abre/cierra días (tiempo real).
+  const openDaysRef = useRef<Record<string, boolean>>({});
+  const selectedDateRef = useRef(selectedDate);
+  const daysReloadTimer = useRef<number | null>(null);
+
   useEffect(() => {
-    getOpenDays(today, upcomingDays[upcomingDays.length - 1].dateStr)
-      .then(setOpenDays)
-      .catch(() => setOpenDays({}));
-  }, [today, upcomingDays]);
+    openDaysRef.current = openDays;
+  }, [openDays]);
+
+  useEffect(() => {
+    selectedDateRef.current = selectedDate;
+  }, [selectedDate]);
+
+  const reloadOpenDays = useCallback(
+    async (notifyClosedDay: boolean) => {
+      try {
+        const map = await getOpenDays(today, upcomingDays[upcomingDays.length - 1].dateStr);
+        const prev = openDaysRef.current;
+        const current = selectedDateRef.current;
+        openDaysRef.current = map;
+        setOpenDays(map);
+        if (notifyClosedDay && current && prev[current] === true && map[current] !== true) {
+          setInfo('El barbero cerró este día. Elegí otro día abierto.');
+        }
+      } catch {
+        // ante un fallo de red se conserva el mapa anterior
+      }
+    },
+    [today, upcomingDays],
+  );
+
+  useEffect(() => {
+    reloadOpenDays(false);
+  }, [reloadOpenDays]);
 
   // Por defecto: primer día abierto (respeta la fecha del link solo si está abierta)
   useEffect(() => {
@@ -116,6 +174,8 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
   // Cargar la agenda del día (sin necesidad de identificarse)
   useEffect(() => {
     if (!selectedDate) return;
+    // Nunca cargar/crear slots de días pasados
+    if (selectedDate < today) return;
     let cancelled = false;
     setLoading(true);
     Promise.all([ensureDaySlots(selectedDate), listAppointments(selectedDate)])
@@ -125,7 +185,11 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
         setAppointments(
           apptRows
             .filter((a) => a.status !== 'cancelled')
-            .map((a) => ({ time: a.time, name: a.clients?.full_name || '' })),
+            .map((a) => ({
+              time: a.time,
+              name: a.clients?.full_name || '',
+              isAnonymous: a.is_anonymous === true,
+            })),
         );
       })
       .catch((e) => setError(e.message))
@@ -141,11 +205,55 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
     };
   }, [imagePreview]);
 
-  // Cambios en tiempo real (otras reservas, movimientos, cancelaciones)
+  // Cambios en tiempo real (otras reservas, movimientos, cancelaciones
+  // y días abiertos/cerrados por el barbero). Los días se refrescan con
+  // debounce porque abrir/cerrar varios dispara un evento por día.
   useEffect(() => {
-    const unsubscribe = subscribeAgendaChanges(() => setRefreshKey((k) => k + 1));
-    return unsubscribe;
-  }, []);
+    const unsubscribe = subscribeAgendaChanges(() => {
+      setRefreshKey((k) => k + 1);
+      if (daysReloadTimer.current !== null) window.clearTimeout(daysReloadTimer.current);
+      daysReloadTimer.current = window.setTimeout(() => {
+        reloadOpenDays(true);
+      }, 800);
+    });
+    return () => {
+      unsubscribe();
+      if (daysReloadTimer.current !== null) window.clearTimeout(daysReloadTimer.current);
+    };
+  }, [reloadOpenDays]);
+
+  // Respaldo por polling: aunque el canal de tiempo real falle, los días
+  // abiertos se actualizan solos cada 10 segundos en la agenda.
+  useEffect(() => {
+    if (step !== 'agenda') return;
+    const id = window.setInterval(() => {
+      reloadOpenDays(true);
+    }, 10000);
+    return () => window.clearInterval(id);
+  }, [step, reloadOpenDays]);
+
+  // Al volver a la agenda o a la pestaña, refrescar días y turnos
+  useEffect(() => {
+    if (step === 'agenda') reloadOpenDays(false);
+  }, [step, reloadOpenDays]);
+
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.hidden) return;
+      setRefreshKey((k) => k + 1);
+      reloadOpenDays(true);
+    };
+    const onFocus = () => {
+      setRefreshKey((k) => k + 1);
+      reloadOpenDays(true);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [reloadOpenDays]);
 
   // Si este dispositivo ya identificó a un cliente, restaurar su sesión
   useEffect(() => {
@@ -191,6 +299,20 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
   }, []);
 
   const openDayList = upcomingDays.filter((d) => openDays[d.dateStr] === true);
+
+  // Solo turnos vigentes (hoy/futuros) + atendidos como historial.
+  // Los turnos viejos sin atender se ocultan: su día ya no existe en la agenda
+  // y solo generan confusión (el barbero los ve igual en su panel).
+  const visibleBookings = recentBookings.filter(
+    (b) => b.date >= today || b.status === 'attended',
+  );
+
+  // Al entrar a confirmar, el anonimato arranca apagado (o como esté en tu turno si editás)
+  useEffect(() => {
+    if (step === 'reference') {
+      setIsAnonymous(isEditing && activeBooking ? activeBooking.is_anonymous === true : false);
+    }
+  }, [step, isEditing, activeBooking]);
 
   const isPastTime = (time: string): boolean => {
     if (selectedDate !== today) return false;
@@ -240,6 +362,13 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
     setName('');
     setPhone('');
     setEmail('');
+    // La referencia/foto/nota eran de tu turno: no heredarlas para otra persona
+    setReferenceUrl('');
+    setNote('');
+    if (imagePreview) URL.revokeObjectURL(imagePreview);
+    setImageFile(null);
+    setImagePreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
     setStep('identify');
   };
 
@@ -308,6 +437,10 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
         setIsEditing(false);
         setReferenceUrl('');
         setNote('');
+        if (imagePreview) URL.revokeObjectURL(imagePreview);
+        setImageFile(null);
+        setImagePreview(null);
+        if (fileInputRef.current) fileInputRef.current.value = '';
         setStep('reference');
       }
     } catch (err) {
@@ -329,6 +462,7 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
     setLoading(true);
     try {
       await setAppointmentState(activeBooking.id, 'cancelled');
+      setCancelArmed(false);
       setInfo('Turno cancelado. Podés reservar otro cuando quieras.');
       setActiveBooking(null);
       setIsEditing(false);
@@ -345,6 +479,17 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
   const handleConfirm = async () => {
     if (!identified || !pendingTime) return;
     setError('');
+    // Bloqueo: no se puede reservar en días pasados (hoy = 2026-09-09)
+    if (selectedDate < today) {
+      setError('No se pueden hacer citas en días pasados. Elegí hoy o un día futuro.');
+      return;
+    }
+    // El día pudo cerrarse mientras el cliente elegía: verificar con datos frescos
+    if (openDays[selectedDate] !== true) {
+      setError('Este día fue cerrado por el barbero. Elegí otro día abierto.');
+      reloadOpenDays(false);
+      return;
+    }
     setLoading(true);
     try {
       let referenceImageUrl: string | null = null;
@@ -362,6 +507,7 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
           referenceUrl: url,
           referenceImageUrl: referenceImageUrl || activeBooking.reference_image_url,
           note: cleanNote,
+          isAnonymous,
         });
       } else {
         booking = await createBooking({
@@ -371,6 +517,7 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
           referenceUrl: url,
           referenceImageUrl,
           note: cleanNote,
+          isAnonymous,
         });
       }
 
@@ -378,6 +525,11 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
       setInfo('');
       setIsEditing(false);
       setActiveBooking(booking);
+      // La foto ya se subió: limpiarla para no re-subirla en la próxima edición
+      if (imagePreview) URL.revokeObjectURL(imagePreview);
+      setImageFile(null);
+      setImagePreview(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
       setRefreshKey((k) => k + 1);
       setStep('done');
 
@@ -427,6 +579,10 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
     setIsEditing(false);
     setPushStatus(null);
     setInfo('');
+    if (imagePreview) URL.revokeObjectURL(imagePreview);
+    setImageFile(null);
+    setImagePreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
     setRefreshKey((k) => k + 1);
     setStep('agenda');
   };
@@ -449,18 +605,42 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
           </div>
         </div>
         <div className="max-w-md mx-auto mt-3">
-          <a
-            href={buildMapsLink(address, businessName)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-[11px] font-bold text-white transition-colors"
-            title="Abrir Google Maps para llegar a la barbería"
-          >
-            <MapPin className="w-3.5 h-3.5 text-emerald-400" />
-            ¿No sabes cómo llegar? ¡Encuéntranos aquí!
-          </a>
+          <div className="flex items-center gap-2 flex-wrap">
+            <a
+              href={buildMapsLink(address, businessName)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-[11px] font-bold text-white transition-colors"
+              title="Abrir Google Maps para llegar a la barbería"
+            >
+              <MapPin className="w-3.5 h-3.5 text-emerald-400" />
+              ¿No sabes cómo llegar? ¡Encuéntranos aquí!
+            </a>
+            <button
+              type="button"
+              onClick={() => setTutorialOpen(true)}
+              className="w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-white text-xs font-bold transition-colors cursor-pointer"
+              title="¿Cómo se usa la app?"
+              aria-label="Ver tutorial"
+            >
+              ?
+            </button>
+          </div>
+          {identified && (
+            <p className="mt-2 text-xs font-bold text-emerald-300 anim-fade">
+              ¡Bienvenido, {identified.client.full_name.split(' ')[0]}!
+            </p>
+          )}
         </div>
       </header>
+
+      <ClientTutorial
+        isOpen={tutorialOpen}
+        onClose={() => {
+          markClientTutorialSeen();
+          setTutorialOpen(false);
+        }}
+      />
 
       <main className="flex-1 -mt-10 px-4 pb-10 w-full">
         <div className="max-w-md mx-auto flex flex-col gap-3">
@@ -513,14 +693,14 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                 </div>
               )}
 
-              {/* Mis turnos (todas las fechas, para que nunca "desaparezcan") */}
-              {identified && recentBookings.length > 0 && (
+              {/* Mis turnos (vigentes e historial de atendidos) */}
+              {identified && visibleBookings.length > 0 && (
                 <div className="mt-3 bg-gray-50/80 border border-gray-200 rounded-xl px-4 py-3 anim-fade">
                   <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
                     📋 Mis turnos
                   </p>
                   <ul className="mt-2 space-y-1.5">
-                    {recentBookings.slice(0, 4).map((b) => (
+                    {visibleBookings.slice(0, 4).map((b) => (
                       <li
                         key={b.id}
                         className="flex items-center justify-between text-xs text-gray-600"
@@ -573,7 +753,7 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                           {d.weekday}
                         </span>
                         <span className="block text-sm font-bold">{d.dateStr.slice(8)}</span>
-                        {recentBookings.some(
+                        {visibleBookings.some(
                           (b) => b.date === d.dateStr && b.status !== 'cancelled',
                         ) && (
                           <span
@@ -633,7 +813,11 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                                       isMine ? 'text-emerald-800' : 'text-gray-600'
                                     }`}
                                   >
-                                    {isMine ? '★ Tu turno · tocá para editar' : appt.name}
+                                    {isMine
+                                      ? '★ Tu turno · tocá para editar'
+                                      : appt.isAnonymous
+                                        ? 'Anónimo'
+                                        : appt.name}
                                   </span>
                                 </div>
                                 <span
@@ -909,26 +1093,53 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={handleCancelBooking}
+                  onClick={() => {
+                    setDeterrent(
+                      CANCEL_DETERRENTS[Math.floor(Math.random() * CANCEL_DETERRENTS.length)],
+                    );
+                    setCancelArmed(true);
+                  }}
                   disabled={loading}
                   className="flex-1 py-2.5 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold rounded-xl transition-colors cursor-pointer disabled:opacity-50"
                 >
                   Cancelar turno
                 </button>
               </div>
+              {cancelArmed && (
+                <div className="mt-3 bg-red-50 border border-red-200 rounded-xl px-3.5 py-3 anim-fade">
+                  <p className="text-xs font-bold text-red-800">{deterrent}</p>
+                  <div className="flex items-center gap-2 mt-2.5">
+                    <button
+                      type="button"
+                      onClick={handleCancelBooking}
+                      disabled={loading}
+                      className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      {loading ? 'Cancelando…' : 'Sí, cancelar igual'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCancelArmed(false)}
+                      className="flex-1 py-2 text-xs font-bold text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition-colors cursor-pointer"
+                    >
+                      Mejor me quedo
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl px-3.5 py-2.5 text-[11px] text-amber-900">
                 ⚠️ Si no podés asistir, cancelá o cambiá tu turno con{' '}
                 <span className="font-bold">al menos 2 horas de anticipación</span> para que el
                 barbero pueda reponerlo.
               </div>
 
-              {recentBookings.length > 0 && (
+              {visibleBookings.length > 0 && (
                 <div className="mt-3 bg-gray-50/80 border border-gray-200 rounded-xl px-4 py-3">
                   <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
                     📋 Tus turnos
                   </p>
                   <ul className="mt-2 space-y-1.5">
-                    {recentBookings.map((b) => (
+                    {visibleBookings.map((b) => (
                       <li
                         key={b.id}
                         className="flex items-center justify-between text-xs text-gray-600"
@@ -1042,8 +1253,14 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                 onChange={(e) => {
                   const file = e.target.files?.[0];
                   if (!file) return;
+                  if (!ACCEPTED_IMAGES.includes(file.type)) {
+                    setError('Ese archivo no es una foto válida (JPG, PNG, WEBP o GIF).');
+                    e.target.value = '';
+                    return;
+                  }
                   if (file.size > 8 * 1024 * 1024) {
                     setError('La foto es muy grande (máx. 8 MB).');
+                    e.target.value = '';
                     return;
                   }
                   setError('');
@@ -1060,6 +1277,35 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                 aria-label="Nota para el barbero"
                 className="w-full px-3 py-2.5 mt-3 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500 resize-none"
               />
+
+              <button
+                type="button"
+                onClick={() => setIsAnonymous((v) => !v)}
+                role="switch"
+                aria-checked={isAnonymous}
+                aria-label="Reservar como anónimo"
+                className="w-full mt-3 flex items-center justify-between bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2.5 cursor-pointer"
+              >
+                <span className="flex items-center gap-2 text-xs font-bold text-gray-700">
+                  <EyeOff className="w-4 h-4 text-gray-400" />
+                  Reservar como anónimo
+                </span>
+                <span
+                  className={`relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors ${
+                    isAnonymous ? 'bg-emerald-500' : 'bg-gray-300'
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition duration-200 ease-in-out ${
+                      isAnonymous ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </span>
+              </button>
+              <p className="text-[11px] text-gray-400 mt-1.5">
+                Los demás clientes verán «Anónimo» y tu horario queda ocupado igual. El barbero sí
+                ve quién sos.
+              </p>
 
               <button
                 type="button"

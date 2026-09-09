@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppointmentRecord, ServiceItem, SlotRecord } from '../../types';
 import {
   ensureDaySlots,
@@ -19,9 +19,9 @@ import { HoursEditorModal } from './HoursEditorModal';
 import { ClientsPanelModal } from './ClientsPanelModal';
 import { CalendarModal } from './CalendarModal';
 import { CutsHistoryTable } from './CutsHistoryTable';
+import { Modal } from '../Modal';
 import { useToast } from '../Toast';
 import {
-  BarChart3,
   CalendarDays,
   ChevronLeft,
   ChevronRight,
@@ -37,7 +37,6 @@ interface BarberAgendaViewProps {
   businessName: string;
   services: ServiceItem[];
   onOpenSettings: () => void;
-  onOpenReports: () => void;
 }
 
 interface SlotView {
@@ -56,7 +55,6 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
   businessName,
   services,
   onOpenSettings,
-  onOpenReports,
 }) => {
   const showToast = useToast();
   const today = getTodayDateString();
@@ -66,6 +64,8 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
   const [appointments, setAppointments] = useState<AppointmentRecord[]>([]);
   const [isOpen, setIsOpen] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [loadedDate, setLoadedDate] = useState<string | null>(null);
+  const reloadSeq = useRef(0);
   const [error, setError] = useState('');
 
   // Modal actions
@@ -73,10 +73,13 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
   const [showHoursEditor, setShowHoursEditor] = useState(false);
   const [showClients, setShowClients] = useState(false);
   const [showCalendar, setShowCalendar] = useState(false);
+  const [confirmDayToggle, setConfirmDayToggle] = useState(false);
 
   const upcomingDays = useMemo(() => getUpcomingDays(7), []);
 
   const reload = useCallback(async () => {
+    const seq = ++reloadSeq.current;
+    const target = selectedDate;
     setLoading(true);
     try {
       const [dayConfig, slotRows, apptRows] = await Promise.all([
@@ -84,14 +87,17 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
         ensureDaySlots(selectedDate),
         listAppointments(selectedDate),
       ]);
+      if (reloadSeq.current !== seq) return;
       setIsOpen(dayConfig ? dayConfig.is_open : false);
       setSlots(slotRows);
       setAppointments(apptRows);
+      setLoadedDate(target);
       setError('');
     } catch (e) {
+      if (reloadSeq.current !== seq) return;
       setError(e instanceof Error ? e.message : 'Error al cargar la agenda');
     } finally {
-      setLoading(false);
+      if (reloadSeq.current === seq) setLoading(false);
     }
   }, [selectedDate]);
 
@@ -124,6 +130,11 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
 
   const handleToggleDay = async () => {
     const next = !isOpen;
+    // Seguridad: no abrir días pasados desde la agenda
+    if (next && selectedDate < today) {
+      showToast('No se pueden abrir días pasados', 'error');
+      return;
+    }
     setIsOpen(next);
     try {
       await setDayOpen(selectedDate, next);
@@ -144,6 +155,8 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
     }
   };
 
+  const dayReady = loadedDate === selectedDate;
+  const isPastDay = selectedDate < today;
   const activeAppointment = actionSlot
     ? (appointments.find((a) => a.time === actionSlot.time && a.status !== 'cancelled') ?? null)
     : null;
@@ -228,15 +241,6 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
               </button>
               <button
                 type="button"
-                onClick={onOpenReports}
-                className="p-2 text-gray-500 hover:text-gray-900 rounded-lg hover:bg-gray-100 cursor-pointer"
-                title="Reportes"
-                aria-label="Ver reportes"
-              >
-                <BarChart3 className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
                 onClick={() => setAgendaView(agendaView === 'cuts' ? 'agenda' : 'cuts')}
                 className={`p-2 rounded-lg cursor-pointer ${
                   agendaView === 'cuts'
@@ -290,9 +294,16 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
           <div className="flex items-center gap-2.5 shrink-0">
             <button
               type="button"
-              onClick={handleToggleDay}
-              className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-gray-50 border border-gray-200 hover:bg-gray-100 transition-colors cursor-pointer"
-              title={isOpen ? 'Cerrar el día' : 'Abrir el día'}
+              onClick={() => setConfirmDayToggle(true)}
+              disabled={!dayReady}
+              className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-gray-50 border border-gray-200 hover:bg-gray-100 transition-colors cursor-pointer disabled:opacity-50"
+              title={
+                isPastDay && !isOpen
+                  ? 'Día pasado: no se puede abrir'
+                  : isOpen
+                    ? 'Cerrar el día'
+                    : 'Abrir el día'
+              }
             >
               <span className="w-2 h-2 rounded-full bg-emerald-500" />
               <span className="text-[11px] font-bold text-gray-700">
@@ -327,13 +338,6 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
             </button>
             <button
               type="button"
-              onClick={onOpenReports}
-              className="md:hidden text-[10px] sm:text-[11px] font-bold text-gray-600 hover:text-gray-900 px-2 sm:px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer whitespace-nowrap"
-            >
-              Reportes
-            </button>
-            <button
-              type="button"
               onClick={() => setAgendaView(agendaView === 'cuts' ? 'agenda' : 'cuts')}
               className="md:hidden text-[10px] sm:text-[11px] font-bold text-gray-600 hover:text-gray-900 px-2 sm:px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer whitespace-nowrap"
             >
@@ -353,7 +357,7 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
       {/* Main */}
       <main className="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-6">
         {agendaView === 'cuts' ? (
-          <CutsHistoryTable services={services} />
+          <CutsHistoryTable services={services} onBack={() => setAgendaView('agenda')} />
         ) : (
           <>
         {error && (
@@ -365,27 +369,31 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
           </p>
         )}
 
-        {!isOpen ? (
+        {!dayReady || loading ? (
+          <p className="text-xs text-gray-400 italic text-center py-16 anim-fade">
+            Cargando agenda…
+          </p>
+        ) : !isOpen ? (
           <div className="flex flex-col items-center justify-center text-center py-16 space-y-4 anim-up">
             <div className="w-14 h-14 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center border border-amber-200">
               <Scissors className="w-7 h-7" />
             </div>
             <h2 className="text-base font-bold text-gray-900">Día cerrado</h2>
             <p className="text-xs text-gray-500 max-w-xs">
-              Los clientes no pueden reservar este día. Abrilo cuando quieras recibir turnos.
+              {isPastDay
+                ? 'Este día ya pasó y no se puede abrir.'
+                : 'Los clientes no pueden reservar este día. Abrilo cuando quieras recibir turnos.'}
             </p>
-            <button
-              type="button"
-              onClick={handleToggleDay}
-              className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
-            >
-              Abrir este día
-            </button>
+            {!isPastDay && (
+              <button
+                type="button"
+                onClick={handleToggleDay}
+                className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+              >
+                Abrir este día
+              </button>
+            )}
           </div>
-        ) : loading ? (
-          <p className="text-xs text-gray-400 italic text-center py-16 anim-fade">
-            Cargando agenda…
-          </p>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-5 anim-up">
             {PERIODS.map((period) => (
@@ -440,7 +448,47 @@ export const BarberAgendaView: React.FC<BarberAgendaViewProps> = ({
         isOpen={showCalendar}
         onClose={() => setShowCalendar(false)}
         onChanged={reload}
+        businessName={businessName}
       />
+      <Modal
+        isOpen={confirmDayToggle}
+        onClose={() => setConfirmDayToggle(false)}
+        title={isOpen ? '¿Cerrar el día?' : '¿Abrir el día?'}
+        maxWidth="max-w-sm"
+        headerClassName="bg-gray-50/60"
+      >
+        <div className="p-5 space-y-4">
+          <p className="text-xs text-gray-600">
+            <span className="font-bold text-gray-900 capitalize">
+              {formatDateDisplay(selectedDate)}
+            </span>
+            {isOpen
+              ? ' se cerrará y los clientes dejarán de verlo para reservar.'
+              : ' se abrirá y los clientes podrán reservar turnos.'}
+          </p>
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirmDayToggle(false)}
+              className="px-4 py-2 text-xs font-semibold text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer"
+            >
+              Volver
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmDayToggle(false);
+                handleToggleDay();
+              }}
+              className={`px-4 py-2 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer ${
+                isOpen ? 'bg-red-600 hover:bg-red-700' : 'bg-emerald-600 hover:bg-emerald-700'
+              }`}
+            >
+              {isOpen ? 'Sí, cerrar día' : 'Sí, abrir día'}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 };
