@@ -1181,17 +1181,33 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    setDeterrent(
-                      CANCEL_DETERRENTS[Math.floor(Math.random() * CANCEL_DETERRENTS.length)],
-                    );
-                    setCancelArmed(true);
+                    setIsEditing(true);
+                    setPendingTime(activeBooking.time);
+                    setSelectedDate(activeBooking.date);
+                    setReferenceUrl(activeBooking.reference_url || '');
+                    setNote(activeBooking.note || '');
+                    setImageFile(null);
+                    setImagePreview(null);
+                    setStep('reference');
                   }}
-                  disabled={loading}
-                  className="flex-1 py-2.5 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold rounded-xl transition-colors cursor-pointer disabled:opacity-50"
+                  className="flex-1 py-2.5 bg-gray-900 hover:bg-black text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
                 >
-                  Cancelar turno
+                  Editar corte
                 </button>
               </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setDeterrent(
+                    CANCEL_DETERRENTS[Math.floor(Math.random() * CANCEL_DETERRENTS.length)],
+                  );
+                  setCancelArmed(true);
+                }}
+                disabled={loading}
+                className="w-full mt-2 py-2.5 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold rounded-xl transition-colors cursor-pointer disabled:opacity-50"
+              >
+                Cancelar turno
+              </button>
               {cancelArmed && (
                 <div className="mt-3 bg-red-50 border border-red-200 rounded-xl px-3.5 py-3 anim-fade">
                   <p className="text-xs font-bold text-red-800">{deterrent}</p>
@@ -1264,12 +1280,17 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  setPendingTime(null);
-                  setStep('agenda');
+                  if (isEditing) {
+                    setStep('manage');
+                  } else {
+                    setPendingTime(null);
+                    setStep('agenda');
+                  }
                 }}
                 className="flex items-center gap-1 text-[11px] font-bold text-gray-500 hover:text-gray-800 mb-3 cursor-pointer"
               >
-                <ArrowLeft className="w-3.5 h-3.5" /> Cambiar horario
+                <ArrowLeft className="w-3.5 h-3.5" />{' '}
+                {isEditing ? 'Volver a mi turno' : 'Cambiar horario'}
               </button>
 
               <div className="flex items-center justify-between bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 mb-4">
