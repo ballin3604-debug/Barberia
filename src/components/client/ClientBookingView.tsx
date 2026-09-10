@@ -15,7 +15,6 @@ import {
   IdentifiedClient,
   listAppointments,
   loadClientSession,
-  lookupBookingsByPhone,
   normalizePhone,
   sanitizeEmail,
   saveClientSession,
@@ -119,9 +118,6 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
   const [doneBooking, setDoneBooking] = useState<{ date: string; time: string } | null>(null);
   const [pushStatus, setPushStatus] = useState<PushResult | null>(null);
   const [tutorialOpen, setTutorialOpen] = useState(() => !hasSeenClientTutorial());
-  const [lookupPhone, setLookupPhone] = useState('');
-  const [lookupBusy, setLookupBusy] = useState(false);
-  const [lookupMessage, setLookupMessage] = useState<{ type: 'error' | 'none'; text: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const upcomingDays = useMemo(() => getUpcomingDays(14), []);
@@ -461,52 +457,6 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
     }
   };
 
-  // Buscar mis citas por WhatsApp e ir directo a editarlas
-  const handleLookup = async (e?: React.FormEvent) => {
-    e?.preventDefault();
-    const digits = normalizePhone(lookupPhone);
-    if (digits.length < 7) {
-      setLookupMessage({ type: 'error', text: 'Escribí tu WhatsApp completo.' });
-      return;
-    }
-    setLookupBusy(true);
-    setLookupMessage(null);
-    try {
-      const result = await lookupBookingsByPhone(digits);
-      if (!result) {
-        setLookupMessage({ type: 'none', text: 'No hay citas con ese teléfono.' });
-        return;
-      }
-      const { client, active, recent, daysSinceLastCut } = result;
-      setIdentified({ client, isNew: false, daysSinceLastCut });
-      setActiveBooking(active);
-      setRecentBookings(recent);
-      saveClientSession({
-        clientId: client.id,
-        fullName: client.full_name,
-        phone: client.phone,
-        email: client.email || '',
-        savedAt: new Date().toISOString(),
-      });
-      if (active) {
-        setReferenceUrl(active.reference_url || '');
-        setNote(active.note || '');
-        setStep('manage');
-        setInfo(
-          `Turno encontrado: ${formatDateDisplay(active.date)} · ${active.time} h. Podés cambiarlo o cancelarlo.`,
-        );
-      } else {
-        setInfo(
-          `Hola ${client.full_name.split(' ')[0]}, no tienes turnos activos. ¡Reservá el tuyo abajo!`,
-        );
-      }
-    } catch {
-      setLookupMessage({ type: 'error', text: 'No pudimos buscar. Revisá tu conexión.' });
-    } finally {
-      setLookupBusy(false);
-    }
-  };
-
   const handleCancelBooking = async () => {
     if (!activeBooking) return;
     setLoading(true);
@@ -743,43 +693,6 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                 </div>
               )}
 
-              {/* Buscar mi cita por teléfono (siempre visible) */}
-              <div className="mt-3 bg-white border border-gray-200 rounded-xl px-4 py-3.5 anim-fade">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
-                    ¿Ya tienes cita? Busca con tu teléfono
-                  </p>
-                  <form onSubmit={handleLookup} className="flex items-center gap-2 mt-2">
-                    <input
-                      type="tel"
-                      inputMode="tel"
-                      value={lookupPhone}
-                      onChange={(e) => {
-                        setLookupPhone(e.target.value);
-                        setLookupMessage(null);
-                      }}
-                      placeholder="Tu WhatsApp"
-                      aria-label="Tu WhatsApp"
-                      className="flex-1 min-w-0 px-3 py-2 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-800"
-                    />
-                    <button
-                      type="submit"
-                      disabled={lookupBusy}
-                      className="px-5 py-2 bg-blue-800 hover:bg-blue-900 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer shrink-0"
-                    >
-                      {lookupBusy ? '…' : 'Ver'}
-                    </button>
-                  </form>
-                  {lookupMessage && (
-                    <p
-                      className={`text-[11px] font-semibold mt-2 ${
-                        lookupMessage.type === 'error' ? 'text-red-600' : 'text-gray-500'
-                      }`}
-                    >
-                      {lookupMessage.text}
-                    </p>
-                  )}
-                </div>
-
               {/* Mis turnos (vigentes e historial de atendidos) */}
               {identified && visibleBookings.length > 0 && (
                 <div className="mt-3 bg-gray-50/80 border border-gray-200 rounded-xl px-4 py-3 anim-fade">
@@ -901,7 +814,7 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                                     }`}
                                   >
                                     {isMine
-                                      ? '★ Tu turno · tocá para editar'
+                                      ? '★ Tu turno · tocá para ver'
                                       : appt.isAnonymous
                                         ? 'Anónimo'
                                         : appt.name}
@@ -914,7 +827,7 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                                       : 'bg-gray-200/80 text-gray-500'
                                   }`}
                                 >
-                                  {isMine ? '✏️ Editar' : 'Ya reservó'}
+                                  {isMine ? 'Ver' : 'Ya reservó'}
                                 </span>
                               </div>
                             );
