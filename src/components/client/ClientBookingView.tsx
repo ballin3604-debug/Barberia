@@ -743,9 +743,8 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                 </div>
               )}
 
-              {/* Buscar mi cita por teléfono */}
-              {!identified && (
-                <div className="mt-3 bg-white border border-gray-200 rounded-xl px-4 py-3.5 anim-fade">
+              {/* Buscar mi cita por teléfono (siempre visible) */}
+              <div className="mt-3 bg-white border border-gray-200 rounded-xl px-4 py-3.5 anim-fade">
                   <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
                     ¿Ya tienes cita? Busca con tu teléfono
                   </p>
@@ -780,7 +779,6 @@ export const ClientBookingView: React.FC<ClientBookingViewProps> = ({
                     </p>
                   )}
                 </div>
-              )}
 
               {/* Mis turnos (vigentes e historial de atendidos) */}
               {identified && visibleBookings.length > 0 && (
