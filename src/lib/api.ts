@@ -297,6 +297,43 @@ export const getClientHistory = async (clientId: string): Promise<AppointmentRec
   return (data ?? []) as AppointmentRecord[];
 };
 
+/** Busca al cliente por su WhatsApp (solo lectura, no crea nada). */
+export const findClientByPhone = async (phone: string): Promise<ClientRecord | null> => {
+  const sb = getSupabase();
+  const cleanPhone = normalizePhone(phone);
+  if (!cleanPhone) return null;
+  const { data, error } = await sb
+    .from('clients')
+    .select('*')
+    .eq('phone', cleanPhone)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as ClientRecord | null) ?? null;
+};
+
+export interface PhoneLookupResult {
+  client: ClientRecord;
+  active: AppointmentRecord | null;
+  recent: AppointmentRecord[];
+  daysSinceLastCut: number | null;
+}
+
+/** Busca las citas de un cliente por su WhatsApp para verlas y editarlas. */
+export const lookupBookingsByPhone = async (phone: string): Promise<PhoneLookupResult | null> => {
+  const client = await findClientByPhone(phone);
+  if (!client) return null;
+  const [active, recent] = await Promise.all([
+    getActiveBooking(client.id),
+    getRecentBookings(client.id),
+  ]);
+  return {
+    client,
+    active,
+    recent,
+    daysSinceLastCut: client.last_visit ? daysSince(client.last_visit) : null,
+  };
+};
+
 /* ─────────────────────────────────────────────
  * Citas
  * ───────────────────────────────────────────── */
